@@ -13,6 +13,18 @@ To install the ALMA-UNIC pipeline:
 pip install git+
 ```
 
+For tasks requiring tclean, a monolithic CASA version is needed. If you prefer a
+specific version of casa/mpicasa, then you can define the following environmental
+variable:
+
+```bash
+export MPICASA="/path/to/mpicasa -n {0} /path/to/casa"
+```
+
+Note that only the paths to `casa` and `mpicasa` need to be modified, the number
+of processes (after the `-n` flag) is evaluated internally from the command line
+options.
+
 ### For developing
 
 In general, to install in editable mode run:
@@ -22,6 +34,8 @@ In general, to install in editable mode run:
 mkdir -p /my/preferred/directory
 cd /my/preferred/directory
 git clone ....
+
+# Install with pip in editable mode
 cd unic-pipeline
 pip install -e .
 ```
@@ -33,6 +47,8 @@ All dependencies are managed in the `pyproject.toml` file within the base direct
 
 ## Usage
 
+For help:
+
 ```bash
-python -m unic_pipeline.unic ...
+python -m unic_pipeline.unic -h
 ```
