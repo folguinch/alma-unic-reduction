@@ -7,10 +7,10 @@ import argparse
 import sys
 
 from casatasks import split, concat
-from unic_pipepline import tasks
-from unic_pipepline.data_handler import DataHandler
-import unic_pipepline.argparse_parents as parents
-import unic_pipepline.argparse_actions as actions
+from unic_pipeline import utils
+from unic_pipeline.data_handler import DataHandler
+import unic_pipeline.argparse_parents as parents
+import unic_pipeline.argparse_actions as actions
 
 def _set_config(args: argparse.Namespace):
     """Setup the `config` value in `args`.
@@ -50,7 +50,7 @@ def split_vis(args: argparse.Namespace):
         else:
             outputvis = args.uvdata.parent / f"{config['name']}.ms"
 
-        run_step = tasks.validate_step('split' in args.skip, outputvis)
+        run_step = utils.validate_step('split' in args.skip, outputvis)
         if run_step:
             split(vis=vis,
                   outputvis=f'{outputvis}',
@@ -62,7 +62,7 @@ def split_vis(args: argparse.Namespace):
     # Concatenate if more than 1 EB
     if neb > 1:
         concatvis = args.uvdata.parent / f"{config['name']}.ms"
-        run_step = tasks.validate_step('split' in args.skip, concatvis)
+        run_step = utils.validate_step('split' in args.skip, concatvis)
         if run_step:
             concat(list(map(str, splitvis)), concatvis=f'{concatvis}')
     else:

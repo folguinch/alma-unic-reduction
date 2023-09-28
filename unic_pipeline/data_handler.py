@@ -1,5 +1,5 @@
 """Handler for the data."""
-from typing import Optional, List, Callable, Mapping
+from typing import Optional, List, Callable
 from dataclasses import dataclass, field
 import os
 
@@ -7,8 +7,7 @@ from casatasks import uvcontsub, split
 
 from .utils import get_spws_indices, validate_step
 from .clean_tasks import get_tclean_params, tclean_parallel
-
-SectionProxy = Mapping[str, str]
+from .common_types import SectionProxy
 
 @dataclass
 class DataHandler:

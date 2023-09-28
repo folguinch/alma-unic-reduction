@@ -75,7 +75,7 @@ def tclean_parallel(vis: Path,
         paramsfile.write_text(json.dumps(tclean_args, indent=4))
 
         # Run
-        cmd = os.environ.get('MPICASA', f'mpicasa -n {nproc} casa')
+        cmd = os.environ.get('MPICASA', 'mpicasa -n {0} casa').format(nproc)
         script = Path(__file__).parent / 'run_tclean_parallel.py'
         logfile = datetime.now().isoformat(timespec='milliseconds')
         logfile = f'tclean_parallel_{logfile}.log'
