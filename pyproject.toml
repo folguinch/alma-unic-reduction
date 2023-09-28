@@ -8,6 +8,9 @@ packages = [{include = "unic_pipeline"}]
 
 [tool.poetry.dependencies]
 python = "^3.8"
+casatools = "^6.6.0.20"
+casatasks = "^6.6.0.20"
+casadata = "^2023.9.18"
 
 
 [build-system]
