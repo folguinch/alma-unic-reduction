@@ -1,29 +1,16 @@
 """ALMA-UNIC pipeline."""
 from typing import Optional, List
-from configparser import ConfigParser, NoSectionError, ExtendedInterpolation
+from configparser import ConfigParser, ExtendedInterpolation
 from datetime import datetime
 from pathlib import Path
 import argparse
 import sys
 
 from casatasks import split, concat
+from unic_pipepline import tasks
+from unic_pipepline.data_handler import DataHandler
 import unic_pipepline.argparse_parents as parents
 import unic_pipepline.argparse_actions as actions
-import unic_pipepline.tasks as tasks
-
-def validate_step(in_skip: bool, filename: Path) -> bool:
-    """Validate the step.
-
-    If the step is not in skip and `filename` exists, then it is deleted and
-    return `True` to run the step again. If the step is in skip but `filename`
-    does not exist, then run the step to generate it.
-    """
-    if in_skip and filename.exists():
-        return False
-    elif filename.exists():
-        os.system(f'rm -rf {filename}')
-
-    return True
 
 def _set_config(args: argparse.Namespace):
     """Setup the `config` value in `args`.
@@ -40,14 +27,14 @@ def _set_config(args: argparse.Namespace):
     if default is not None:
         args.log.info('Reading default configuration: %s', default)
         args.config.read(default)
-    args.log.info('Reading input configuration: %s', args.config)
+    args.log.info('Reading input configuration: %s', args.configfile)
     args.config.read(args.configfile)
 
-    # Check field
+    # Update field
     if args.field is not None:
         args.config['DEFAULT']['field'] = args.field[0]
 
-    # Check basedir
+    # Update basedir
     if args.basedir is not None:
         args.config['DEFAULT']['basedir'] = f'{args.basedir}'
 
@@ -57,12 +44,13 @@ def split_vis(args: argparse.Namespace):
     neb = len(args.uvdata)
     splitvis = []
     for i, vis in enumerate(args.uvdata):
+        # This define the naming conventions for the splitted visibilities
         if neb > 1:
             outputvis = args.uvdata.parent / f"{config['name']}_eb{i+1}.ms"
         else:
             outputvis = args.uvdata.parent / f"{config['name']}.ms"
 
-        run_step = validate_step('split' in args.skip, outputvis)
+        run_step = tasks.validate_step('split' in args.skip, outputvis)
         if run_step:
             split(vis=vis,
                   outputvis=f'{outputvis}',
@@ -70,11 +58,11 @@ def split_vis(args: argparse.Namespace):
                   datacolumn=config['datacolumn'],
                   spw=config['spw'])
         splitvis.append(outputvis)
-    
+
     # Concatenate if more than 1 EB
     if neb > 1:
         concatvis = args.uvdata.parent / f"{config['name']}.ms"
-        run_step = validate_step('split' in args.skip, concatvis)
+        run_step = tasks.validate_step('split' in args.skip, concatvis)
         if run_step:
             concat(list(map(str, splitvis)), concatvis=f'{concatvis}')
     else:
@@ -89,12 +77,75 @@ def dirty_cubes(args: argparse.Namespace):
     config = args.config['dirty_cubes']
     outdir = Path(config['directory'])
     outdir.mkdir(parents=True, exist_ok=True)
-    args.data_handler.clean_cubes(config,
-                                  outdir,
-                                  nproc=args.nproc[0],
-                                  skip='dirty_cubes' in args.skip,
-                                  log=args.log.info,
-                                  niter=0)
+    args.data_handler.clean_per_spw(config,
+                                    outdir,
+                                    nproc=args.nproc[0],
+                                    skip='dirty_cubes' in args.skip,
+                                    log=args.log.info,
+                                    niter=0)
+
+def get_continuum(args: argparse.Namespace):
+    """Obtain or create a line-free channel file."""
+    config = args.config['get_cont']
+
+    # Read or create file
+    cont_file = Path(config.get('cont_file', fallback='./cont.txt'))
+    if not cont_file.is_file():
+        # Different methods can be inplemented in here, and the a "mode" or
+        # "method" item can be added to the config file
+        raise NotImplementedError('Continuum finding not implemented yet')
+    args.data_handler.cont_file = cont_file
+
+def contsub(args: argparse.Namespace):
+    """Calculate the continuum subtracted visibilities.
+    
+    At the moment it is assumed that each line of the `cont.txt` contains the
+    continuum channels for the corresponding `spw`. This is EB independent,
+    i.e. lines do need to be repeated in the file.
+    """
+    config = args.config['contsub']
+    args.data_handler.contsub(config,
+                              skip='contsub' in args.skip,
+                              log=args.log.info)
+
+def cont_avg(args: argparse.Namespace):
+    """Calculate the continuum visibilities."""
+    config = args.config['continuum']
+    args.data_handler.continuum(config,
+                                skip='continuum' in args.skip,
+                                log=args.log.info)
+
+def clean_continuum(args: argparse.Namespace):
+    """Clean continuum data."""
+    config = args.config['clean_cont']
+    outdir = Path(config['directory'])
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # Clean data
+    for suffix in ['cont_all', 'cont']:
+        imagename = outdir / f'{args.data_handler.name}_{suffix}.image'
+        uvdata = args.data_handler.uvdata.with_suffix(f'.ms.{suffix}')
+        args.data_handler.clean_data(config,
+                                     imagename,
+                                     uvdata=uvdata,
+                                     nproc=args.nproc[0],
+                                     skip='clean_cont' in args.skip,
+                                     log=args.log.info)
+
+def clean_cubes(args: argparse.Namespace):
+    """Clean cube data."""
+    config = args.config['clean_cubes']
+    outdir = Path(config['directory'])
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # Clean data
+    uvdata = args.data_handler.uvdata.with_suffix('.ms.contsub')
+    args.data_handler.clean_per_spw(config,
+                                    outdir,
+                                    uvdata=uvdata,
+                                    nproc=args.nproc[0],
+                                    skip='clean_cubes' in args.skip,
+                                    log=args.log.info)
 
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
@@ -113,7 +164,7 @@ def unic(args: Optional[List] = None) -> None:
 
     # Collect all the steps
     steps = [_set_config]
-    steps = step + list(steps.values())
+    steps = steps + list(pipe.values())
 
     # Command line options
     logfile = datetime.now().isoformat(timespec='milliseconds')
@@ -152,7 +203,10 @@ def unic(args: Optional[List] = None) -> None:
     for step_name, step in steps.items():
         if step_name in args.skip:
             args.log.warn('Skipping step: %s', step_name)
-        args.log.info('Running step: %s', step_name)
+        else:
+            args.log.info('Running step: %s', step_name)
+        # Each step has to be run either way to store data directories and
+        # other data needed in subsequent steps
         step(args)
 
 if __name__ == '__main__':

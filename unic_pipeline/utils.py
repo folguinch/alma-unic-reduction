@@ -1,10 +1,25 @@
 """Utility functions."""
-from typing import List, Optional, Sequence, Callable
+from typing import List, Optional, Sequence, Callable, Dict
 from inspect import signature
+import os
 
 from casatasks import vishead
 
 from .common_types import SectionProxy
+
+def validate_step(in_skip: bool, filename: 'pathlib.Path') -> bool:
+    """Validate the step.
+
+    If the step is not in skip and `filename` exists, then it is deleted and
+    return `True` to run the step again. If the step is in skip but `filename`
+    does not exist, then run the step to generate it.
+    """
+    if in_skip and filename.exists():
+        return False
+    elif filename.exists():
+        os.system(f'rm -rf {filename}')
+
+    return True
 
 def get_spws(vis: 'pathlib.Path') -> List:
     """Retrieve the spws in a visibility ms."""

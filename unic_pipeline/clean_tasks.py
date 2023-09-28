@@ -1,6 +1,5 @@
 """Tools for running the `tclean` CASA task."""
-#from typing import Any, Callable, List, Optional, Sequence, TypeVar, Mapping
-from typing import Callable, Sequence
+from typing import Callable, Sequence, Optional, Dict
 from datetime import datetime
 from pathlib import Path
 import json
