@@ -1,0 +1,4 @@
+*.un~
+*.swp
+*.log
+*__pycache__
