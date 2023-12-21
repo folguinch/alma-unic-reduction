@@ -4,10 +4,53 @@ from inspect import signature
 import os
 
 from casatasks import vishead
+from casatools import msmetadata
 
 from .common_types import SectionProxy
 
-def validate_step(in_skip: bool, filename: 'pathlib.Path') -> bool:
+def get_targets(uvdata: 'pathlib.Path',
+                intent: str = 'OBSERVE_TARGET#ON_SOURCE') -> Sequence[str]:
+    """Identify targets and return the field names."""
+    metadata = msmetadata()
+    metadata.open(f'{uvdata}')
+    fields = metadata.fieldsforintent(intent, asnames=True)
+    metadata.close()
+
+    return fields
+
+def get_array(uvdata: 'pathlib.Path') -> str:
+    """Get the ALMA array: 12m, 7m, TP.
+
+    WARNING: TP has not been implemented yet.
+    """
+    metadata = msmetadata()
+    metadata.open(f'{uvdata}')
+    diameters = metadata.antennadiameter()
+    is12m = [int(val['value']) == 12 for val in diameters.values()]
+    is7m = [int(val['value']) == 7 for val in diameters.values()]
+    metadata.close()
+    if all(is12m):
+        return '12m'
+    elif all(is7m):
+        return '7m'
+    else:
+        raise ValueError('Cannot identify array')
+
+def find_spws(field: str, uvdata: 'pathlib.Path') -> str:
+    """Filter spws for source."""
+    metadata = msmetadata()
+    metadata.open(f'{uvdata}')
+    spws = []
+    for spw in metadata.spwsforfield(field):
+        if 'FULL_RES' in metadata.namesforspws(spw)[0]:
+            spws.append(str(spw))
+    metadata.close()
+
+    return ','.join(spws)
+
+def validate_step(in_skip: bool,
+                  filename: 'pathlib.Path',
+                  log: Callable = print) -> bool:
     """Validate the step.
 
     If the step is not in skip and `filename` exists, then it is deleted and
@@ -17,6 +60,7 @@ def validate_step(in_skip: bool, filename: 'pathlib.Path') -> bool:
     if in_skip and filename.exists():
         return False
     elif filename.exists():
+        log(f'Deleting: {filename}')
         os.system(f'rm -rf {filename}')
 
     return True
