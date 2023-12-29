@@ -7,10 +7,11 @@ readme = "README.md"
 packages = [{include = "unic_pipeline"}]
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = ">=3.9,<4.0"
 casatools = "^6.6.0.20"
 casatasks = "^6.6.0.20"
 casadata = "^2023.9.18"
+astropy = "^6.0.0"
 
 
 [build-system]
