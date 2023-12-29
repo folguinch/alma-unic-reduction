@@ -1,5 +1,5 @@
 """Tools for running the `tclean` CASA task."""
-from typing import Callable, Sequence, Optional, Dict
+from typing import Sequence, Optional, Dict
 from datetime import datetime
 from pathlib import Path
 import json
@@ -31,6 +31,7 @@ def get_tclean_params(
       int_keys: optional; tclean parameters to convert to int.
       bool_keys: optional; tclean parameters to convert to bool.
       int_list_keys: optional; tclean parameters as list of integers.
+      cfgvars: optional; parameters to replace those in config file.
     """
     # Get params
     tclean_pars = get_func_params(tclean, config, required_keys=required_keys,
@@ -48,7 +49,7 @@ def tclean_parallel(vis: Path,
                     imagename: Path,
                     nproc: int,
                     tclean_args: dict,
-                    log: Callable = print):
+                    log: Optional['logging.Logger'] = None):
     """Run `tclean` in parallel.
 
     If the number of processes (`nproc`) is 1, then it is run in a single
@@ -67,12 +68,17 @@ def tclean_parallel(vis: Path,
     """
     if nproc == 1:
         tclean_args.update({'parallel': False})
+        if log is not None:
+            log.debug('Parameters for tclean: %s', tclean_args)
         tclean(vis=str(vis), imagename=str(imagename), **tclean_args)
     else:
         # Save tclean params
         tclean_args.update({'parallel': True})
         paramsfile = imagename.parent / 'tclean_params.json'
         paramsfile.write_text(json.dumps(tclean_args, indent=4))
+        if log is not None:
+            log.debug('Parameters for tclean: %s', tclean_args)
+            log.debug('Writing parameters in: %s', paramsfile)
 
         # Run
         cmd = os.environ.get('MPICASA', 'mpicasa -n {0} casa').format(nproc)
@@ -81,8 +87,9 @@ def tclean_parallel(vis: Path,
         logfile = f'tclean_parallel_{logfile}.log'
         cmd = (f'{cmd} --nogui --logfile {logfile} '
                f'-c {script} {vis} {imagename} {paramsfile}')
-        log(f'Running: {cmd}')
+        if log is not None:
+            log.info('Running: %s', cmd)
         # pylint: disable=R1732
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
-        proc.wait()
+        #proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
+        #proc.wait()
 

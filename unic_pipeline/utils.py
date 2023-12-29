@@ -1,12 +1,58 @@
 """Utility functions."""
-from typing import List, Optional, Sequence, Callable, Dict
+from typing import List, Optional, Sequence, Callable, Dict, Union, Tuple
 from inspect import signature
 import os
 
 from casatasks import vishead
-from casatools import msmetadata
+from casatools import msmetadata, ms
+import astropy.units as u
+import numpy as np
 
 from .common_types import SectionProxy
+
+def gaussian_primary_beam(freq: u.Quantity, diameter: u.Quantity) -> u.Quantity:
+    """Calculate the angular size of a Gaussian primary beam."""
+    b = 1 / np.sqrt(np.log(2))
+    wvl = freq.to(u.m, equivalencies=u.spectral())
+    pb = b * wvl / diameter * u.rad
+    return pb.to(u.arcsec)
+
+def gaussian_beam(freq: u.Quantity, baseline: u.Quantity) -> u.Quantity:
+    """Estimate the synthetize Gaussian beam size."""
+    wvl = freq.to(u.m, equivalencies=u.spectral())
+    beam = wvl / baseline * u.rad
+
+    return beam.to(u.arcsec)
+
+def round_sigfig(val: Union[u.Quantity, float],
+                 sigfig: int = 1) -> Union[u.Quantity, float]:
+    """Round number to given number of significant figures."""
+    logval = np.rint(np.log10(val.value))
+    newval =  np.round(val.value / 10**logval, sigfig-1) * 10**logval
+
+    return newval * val.unit
+
+def extrema_ms(uvdata: 'pathlib.Path',
+               spw: Optional[int] = None) -> Tuple[u.Quantity]:
+    """Calculate the frequency range for MS or SPW and longest baseline."""
+    mstool = ms()
+    mstool.open(f'{uvdata}')
+    metadata = mstool.metadata()
+    info = mstool.range(['uvdist'])
+    max_baseline = np.max(info['uvdist']) * u.m
+    if spw is None:
+        low_freq = np.inf
+        high_freq = 0
+        for i in range(metadata.nspw()):
+            low_aux = np.min(metadata.chanfreqs(spw=i)) * u.Hz
+            high_aux = np.max(metadata.chanfreqs(spw=i)) * u.Hz
+            low_freq = min(low_freq, low_aux)
+            high_freq = max(high_freq, high_aux)
+    else:
+        low_freq = np.min(metadata.chanfreqs(spw=spw)) * u.Hz
+        high_freq = np.max(metadata.chanfreqs(spw=spw)) * u.Hz
+
+    return low_freq.to(u.GHz), high_freq.to(u.GHz), max_baseline
 
 def get_targets(uvdata: 'pathlib.Path',
                 intent: str = 'OBSERVE_TARGET#ON_SOURCE') -> Sequence[str]:

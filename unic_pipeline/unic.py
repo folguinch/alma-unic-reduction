@@ -1,13 +1,10 @@
 """ALMA-UNIC pipeline."""
 from typing import Optional, List
-from configparser import ConfigParser, ExtendedInterpolation
 from datetime import datetime
 from pathlib import Path
 import argparse
 import sys
 
-from casatasks import split, concat
-from unic_pipeline import utils
 from unic_pipeline.data_handler import DataManager
 import unic_pipeline.argparse_parents as parents
 import unic_pipeline.argparse_actions as actions
@@ -32,88 +29,20 @@ def prep_data(args: argparse.Namespace) -> None:
     else:
         raise ValueError('Need input data')
 
-#def _set_uvdata(args: argparse.Namespace):
-#    """Setup the uvdata value.
-#
-#    If `args.uvdata` is not set and `field.ms` is in the directory, then
-#    `split` and `concat` steps are set to skip them. In this case, number of EBs
-#    should be set in the configuration or command line if more than 1.
-#    """
-#    if args.uvdata is None:
-#        # Set MS
-#        name = args.config['split']['name']
-#        args.log.info('Looking for %s MSs in the directory %s', name,
-#                      args.basedir)
-#        concatvis = args.basedir / f'{name}.ms'
-#
-#        # Look for number of EBs
-#        if args.neb is None:
-#            args.neb = [args.config.getint('split', 'neb', fallback=1)]
-#
-#        # Set uvdata and skip values
-#        if concatvis.exists():
-#            args.uvdata = [concatvis] * args.neb
-#            args.skip = args.skip + ['split']
-#        else:
-#            raise ValueError('Could not find source MS')
-#    else:
-#        args.neb = [len(args.uvdata)]
+def dirty_cubes(args: argparse.Namespace):
+    """Calculate dirty cubes."""
+    for data in args.data.values():
+        data.dirty_cubes(nproc=args.nproc[0])
+    #config = args.config['dirty_cubes']
+    #outdir = Path(config['directory'])
+    #outdir.mkdir(parents=True, exist_ok=True)
+    #args.data_handler.clean_per_spw(config,
+    #                                outdir,
+    #                                nproc=args.nproc[0],
+    #                                skip='dirty_cubes' in args.skip,
+    #                                log=args.log.info,
+    #                                niter=0)
 
-#def split_vis(args: argparse.Namespace):
-#    """Split the visibilities for the requested source."""
-#    config = args.config['split']
-#    splitvis = []
-#    args.log.debug('Number of EBs: %i', args.neb[0])
-#    for i, vis in enumerate(args.uvdata):
-#        # This define the naming conventions for the splitted visibilities
-#        if args.neb[0] > 1:
-#            outputvis = args.basedir / f"{config['name']}_eb{i+1}.ms"
-#        else:
-#            outputvis = args.basedir / f"{config['name']}.ms"
-#
-#        run_step = utils.validate_step('split' in args.skip, outputvis,
-#                                       log=args.log.warning)
-#        if run_step:
-#            args.log.info('Splitting MS: %s', vis)
-#            args.log.info('Output MS: %s', outputvis)
-#            args.log.info('Using column: %s', config['datacolumn'])
-#            split(vis=vis,
-#                  outputvis=f'{outputvis}',
-#                  field=config['field'],
-#                  datacolumn=config['datacolumn'],
-#                  spw=config['spw'])
-#        splitvis.append(outputvis)
-#
-#    # Concatenate if more than 1 EB
-#    if args.neb[0] > 1:
-#        concatvis = args.basedir / f"{config['name']}.ms"
-#        run_step = utils.validate_step('split' in args.skip, concatvis,
-#                                       log=args.log.warning)
-#        if run_step:
-#            args.log.info('Creating concat MS: %s', concatvis)
-#            concat(list(map(str, splitvis)), concatvis=f'{concatvis}')
-#    else:
-#        concatvis = splitvis[0]
-#
-#    # Generate a DataHandler
-#    args.data_handler = DataHandler(name=concatvis.stem, uvdata=concatvis,
-#                                    neb=args.neb[0])
-#
-#    print(args.data_handler)
-#    raise Exception
-#
-#def dirty_cubes(args: argparse.Namespace):
-#    """Calculate dirty cubes."""
-#    config = args.config['dirty_cubes']
-#    outdir = Path(config['directory'])
-#    outdir.mkdir(parents=True, exist_ok=True)
-#    args.data_handler.clean_per_spw(config,
-#                                    outdir,
-#                                    nproc=args.nproc[0],
-#                                    skip='dirty_cubes' in args.skip,
-#                                    log=args.log.info,
-#                                    niter=0)
-#
 #def get_continuum(args: argparse.Namespace):
 #    """Obtain or create a line-free channel file."""
 #    config = args.config['get_cont']
@@ -128,7 +57,7 @@ def prep_data(args: argparse.Namespace) -> None:
 #
 #def contsub(args: argparse.Namespace):
 #    """Calculate the continuum subtracted visibilities.
-#    
+#
 #    At the moment it is assumed that each line of the `cont.txt` contains the
 #    continuum channels for the corresponding `spw`. This is EB independent,
 #    i.e. lines do need to be repeated in the file.
@@ -180,14 +109,15 @@ def prep_data(args: argparse.Namespace) -> None:
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
     # Pipeline steps and functions
-    steps = {#'split': split_vis,
-             'split': prep_data,}
-             #'dirty_cubes': dirty_cubes,
-             #'get_cont': get_continuum,
-             #'contsub': contsub,
-             #'continuum': cont_avg,
-             #'clean_cont': clean_continuum,
-             #'clean_cubes': clean_cubes}
+    steps = {
+        'split': prep_data,
+        'dirty_cubes': dirty_cubes,
+        #'get_cont': get_continuum,
+        #'contsub': contsub,
+        #'continuum': cont_avg,
+        #'clean_cont': clean_continuum,
+        #'clean_cubes': clean_cubes,
+    }
 
     # Default config
     default_config = (Path(__file__).resolve().parent /
