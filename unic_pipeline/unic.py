@@ -16,6 +16,7 @@ def prep_data(args: argparse.Namespace) -> None:
             args.configfiles,
             args.log,
             datadir=args.basedir[0],
+            cont=args.cont,
             resume='split' in args.skip or args.resume,
         )
     elif args.uvdata is not None:
@@ -24,6 +25,7 @@ def prep_data(args: argparse.Namespace) -> None:
             args.defconfig,
             args.log,
             datadir=args.basedir[0],
+            cont=args.cont,
             resume='split' in args.skip or args.resume,
         )
     else:
@@ -33,15 +35,6 @@ def dirty_cubes(args: argparse.Namespace):
     """Calculate dirty cubes."""
     for data in args.data.values():
         data.dirty_cubes(nproc=args.nproc[0])
-    #config = args.config['dirty_cubes']
-    #outdir = Path(config['directory'])
-    #outdir.mkdir(parents=True, exist_ok=True)
-    #args.data_handler.clean_per_spw(config,
-    #                                outdir,
-    #                                nproc=args.nproc[0],
-    #                                skip='dirty_cubes' in args.skip,
-    #                                log=args.log.info,
-    #                                niter=0)
 
 #def get_continuum(args: argparse.Namespace):
 #    """Obtain or create a line-free channel file."""
@@ -55,25 +48,25 @@ def dirty_cubes(args: argparse.Namespace):
 #        raise NotImplementedError('Continuum finding not implemented yet')
 #    args.data_handler.cont_file = cont_file
 #
-#def contsub(args: argparse.Namespace):
-#    """Calculate the continuum subtracted visibilities.
-#
-#    At the moment it is assumed that each line of the `cont.txt` contains the
-#    continuum channels for the corresponding `spw`. This is EB independent,
-#    i.e. lines do need to be repeated in the file.
-#    """
+def continuum(args: argparse.Namespace):
+    """Calculate the continuum visibilities."""
+    for data in args.data.values():
+        data.continuum_visibilities(control_image=True, nproc=args.nproc[0])
+
+def contsub(args: argparse.Namespace):
+    """Calculate the continuum subtracted visibilities.
+
+    At the moment it is assumed that each line of the `cont.txt` contains the
+    continuum channels for the corresponding `spw`. This is EB independent,
+    i.e. lines do need to be repeated in the file.
+    """
+    for data in args.data.values():
+        data.contsub_visibilities(dirty_images=True, nproc=args.nproc[0])
 #    config = args.config['contsub']
 #    args.data_handler.contsub(config,
 #                              skip='contsub' in args.skip,
 #                              log=args.log.info)
-#
-#def cont_avg(args: argparse.Namespace):
-#    """Calculate the continuum visibilities."""
-#    config = args.config['continuum']
-#    args.data_handler.continuum(config,
-#                                skip='continuum' in args.skip,
-#                                log=args.log.info)
-#
+
 #def clean_continuum(args: argparse.Namespace):
 #    """Clean continuum data."""
 #    config = args.config['clean_cont']
@@ -113,8 +106,8 @@ def unic(args: Optional[List] = None) -> None:
         'split': prep_data,
         'dirty_cubes': dirty_cubes,
         #'get_cont': get_continuum,
-        #'contsub': contsub,
-        #'continuum': cont_avg,
+        'continuum': continuum,
+        'contsub': contsub,
         #'clean_cont': clean_continuum,
         #'clean_cubes': clean_cubes,
     }
@@ -158,6 +151,8 @@ def unic(args: Optional[List] = None) -> None:
                         help='uv data ms')
     parser.add_argument('--configfiles', nargs='+', action=actions.CheckFile,
                         help='Configuration file names')
+    parser.add_argument('--cont', nargs='+', action=actions.CheckFile,
+                        help='Continuum files')
     parser.set_defaults(data=None,
                         defconfig=default_config)
 

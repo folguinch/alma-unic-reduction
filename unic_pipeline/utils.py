@@ -32,6 +32,18 @@ def round_sigfig(val: Union[u.Quantity, float],
 
     return newval * val.unit
 
+def find_near_exact_denominator(num: int, den: int,
+                                direction: str = 'up') -> Tuple[int, int]:
+    """Find a closer common denominator to the input one."""
+    if num % den == 0:
+        return den, num//den
+    else:
+        if direction == 'up':
+            inc = 1
+        else:
+            inc = -1
+        return find_near_exact_denominator(num, den + inc, direction=direction)
+
 def extrema_ms(uvdata: 'pathlib.Path',
                spw: Optional[int] = None) -> Tuple[u.Quantity]:
     """Calculate the frequency range for MS or SPW and longest baseline."""
@@ -44,13 +56,19 @@ def extrema_ms(uvdata: 'pathlib.Path',
         low_freq = np.inf
         high_freq = 0
         for i in range(metadata.nspw()):
-            low_aux = np.min(metadata.chanfreqs(spw=i)) * u.Hz
-            high_aux = np.max(metadata.chanfreqs(spw=i)) * u.Hz
+            freqs = mstool.cvelfreqs(spwids=[i], outframe='LSRK') * u.Hz
+            low_aux = np.min(freqs)
+            high_aux = np.max(freqs)
+            #low_aux = np.min(metadata.chanfreqs(spw=i)) * u.Hz
+            #high_aux = np.max(metadata.chanfreqs(spw=i)) * u.Hz
             low_freq = min(low_freq, low_aux)
             high_freq = max(high_freq, high_aux)
     else:
-        low_freq = np.min(metadata.chanfreqs(spw=spw)) * u.Hz
-        high_freq = np.max(metadata.chanfreqs(spw=spw)) * u.Hz
+        freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK') * u.Hz
+        low_freq = np.min(freqs)
+        high_freq = np.max(freqs)
+        #low_freq = np.min(metadata.chanfreqs(spw=spw)) * u.Hz
+        #high_freq = np.max(metadata.chanfreqs(spw=spw)) * u.Hz
 
     return low_freq.to(u.GHz), high_freq.to(u.GHz), max_baseline
 
@@ -82,8 +100,110 @@ def get_array(uvdata: 'pathlib.Path') -> str:
     else:
         raise ValueError('Cannot identify array')
 
+def validate_step(resume: bool,
+                  filename: 'pathlib.Path',
+                  log: Callable = print) -> bool:
+    """Validate the step.
+
+    If the step is not in skip and `filename` exists, then it is deleted and
+    return `True` to run the step again. If the step is in skip but `filename`
+    does not exist, then run the step to generate it.
+    """
+    if resume and filename.exists():
+        return False
+    elif filename.exists():
+        log(f'Deleting: {filename}')
+        os.system(f'rm -rf {filename}')
+
+    return True
+
+def max_chan_width(freq: u.Quantity,
+                   diameter: u.Quantity,
+                   max_baseline: u.Quantity,
+                   reduction: float = 0.99) -> u.Quantity:
+    """Calculate the maximum channel width.
+
+    Given the desired reduction in peak response value, it calculates the
+    maximum channel width accepted. The maximum channel width is calculated by
+    solving the equations in [CASA
+    guides](https://safe.nrao.edu/wiki/pub/Main/RadioTutorial/BandwidthSmearing.pdf).
+
+    Args:
+      freq: frequency.
+      diameter: antenna diameter.
+      max_baseline: maximum baseline.
+      reduction: optional; reduction in peak response.
+
+    Returns:
+      Maximum channel width using a Gaussian response.
+    """
+    chan_width = (freq * 2 * np.sqrt(np.log(2)) * diameter / max_baseline *
+                  np.sqrt(1/reduction**2 - 1))
+
+    return chan_width.to(u.MHz)
+
+def continuum_bins(uvdata: 'pathlib.Path',
+                   diameter: u.Quantity) -> Sequence[int]:
+    """Find the maximum continuum bin sizes."""
+    metadata = msmetadata()
+    metadata.open(f'{uvdata}')
+    bandwidths = metadata.bandwidths()
+    bins = []
+    for i in range(metadata.nspw()):
+        low_freq, high_freq, baseline = extrema_ms(uvdata, spw=i)
+        max_width = max_chan_width(low_freq, diameter, baseline)
+        ngroups = bandwidths[i] * u.Hz / max_width
+        ngroups = int(ngroups.to(1))
+        if ngroups <= 1:
+            binsize = metadata.nchan(i)
+        else:
+            ngroups, binsize = find_near_exact_denominator(metadata.nchan(i),
+                                                           ngroups)
+        bins.append(binsize)
+
+    return bins
+
+def flags_freqs_to_channels(flags: Dict[int, List[str]],
+                            uvdata: 'pathlib.Path',
+                            invert: bool = False,
+                            mask_borders: bool = False,
+                            border: int = 10) -> str:
+    """Convert flags in LSRK frequencies to channels."""
+    mstool = ms()
+    mstool.open(f'{uvdata}')
+    flags_chan = []
+    for spw, flags_freq in flags.items():
+        # Convert to masked array
+        freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK') * u.Hz
+        freqs = np.ma.array(freqs.to(u.GHz).value)
+        if mask_borders:
+            freqs[:border] = np.ma.masked
+            freqs[-border:] = np.ma.masked
+
+        # Mask the frequencies
+        for flag in flags_freq:
+            aux = list(map(lambda x: u.Quantity(x), flag.split()[0].split('~')))
+            aux[0] = aux[0] * aux[1].unit
+            aux = aux[0].to(u.GHz).value, aux[1].to(u.GHz).value
+            freq_low = np.min(aux)
+            freq_high = np.max(aux)
+            freqs = np.ma.masked_where((freqs>=freq_low) & (freqs<=freq_high),
+                                       freqs)
+
+        # Convert to indices
+        if invert:
+            clumps = np.ma.clump_unmasked(freqs)
+        else:
+            clumps = np.ma.clump_masked(freqs)
+        spw_flags = []
+        for clump in clumps:
+            spw_flags.append(f'{clump.start}~{clump.stop-1}')
+        flags_chan.append(f'{spw}:' + ';'.join(spw_flags))
+
+    return ','.join(flags_chan)
+
 def find_spws(field: str, uvdata: 'pathlib.Path') -> str:
-    """Filter spws for source."""
+    """Filter science spws for source."""
     metadata = msmetadata()
     metadata.open(f'{uvdata}')
     spws = []
@@ -93,23 +213,6 @@ def find_spws(field: str, uvdata: 'pathlib.Path') -> str:
     metadata.close()
 
     return ','.join(spws)
-
-def validate_step(in_skip: bool,
-                  filename: 'pathlib.Path',
-                  log: Callable = print) -> bool:
-    """Validate the step.
-
-    If the step is not in skip and `filename` exists, then it is deleted and
-    return `True` to run the step again. If the step is in skip but `filename`
-    does not exist, then run the step to generate it.
-    """
-    if in_skip and filename.exists():
-        return False
-    elif filename.exists():
-        log(f'Deleting: {filename}')
-        os.system(f'rm -rf {filename}')
-
-    return True
 
 def get_spws(vis: 'pathlib.Path') -> List:
     """Retrieve the spws in a visibility ms."""

@@ -4,16 +4,18 @@ from configparser import ConfigParser, ExtendedInterpolation
 from dataclasses import dataclass, InitVar
 from dataclasses import field as dcfield
 from pathlib import Path
+import json
 import os
 
-from casatasks import uvcontsub, concat
+from casatasks import uvcontsub, concat, flagdata, flagmanager
 from casatasks import split as split_ms
 from casatools import synthesisutils
 import astropy.units as u
 
 from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     find_spws, extrema_ms, gaussian_beam,
-                    gaussian_primary_beam, round_sigfig)
+                    gaussian_primary_beam, round_sigfig, continuum_bins,
+                    flags_freqs_to_channels)
 from .clean_tasks import get_tclean_params, tclean_parallel
 from .common_types import SectionProxy
 
@@ -78,6 +80,14 @@ class FieldHandler:
     def field(self, value: str):
         self.name = value
 
+    @property
+    def uvcontinuum(self):
+        return self.uvdata.with_suffix('.cont.ms')
+
+    @property
+    def uvcontsub(self):
+        return self.uvdata.with_suffix('.contsub.ms')
+
     def _validate_config(self):
         """Check that data in config and FieldHandler coincide."""
         # Check if config has been initiated
@@ -122,6 +132,21 @@ class FieldHandler:
             self.log.debug('Updating number of EBs in config to: %s', self.neb)
             self.config['DEFAULT']['neb'] = f'{self.neb}'
 
+        # Store continuum file
+        if self.cont_file is not None:
+            self.config['continuum']['cont_file'] = f'{self.cont_file}'
+            self.log.debug('Setting config cont file: %s', self.cont_file)
+        elif (self.cont_file is None and
+              (cont_file:=self.config.get('continuum', 'cont_file',
+                                          fallback=None)) is not None):
+            self.cont_file = Path(cont_file)
+            self.log.debug('Setting cont file: %s', self.cont_file)
+
+    def update_spws(self):
+        """Update the spws by reading the uvdata."""
+        self.spws = get_spws_indices(self.uvdata)
+        self.log.debug('Updated SPWs: %s', self.spws)
+
     def read_config(self,
                     default_config: Optional['pathlib.Path'] = None) -> None:
         """Load a configuration file."""
@@ -155,25 +180,91 @@ class FieldHandler:
         with self.configfile.open('w') as configfile:
             self.config.write(configfile)
 
-    def map_cont_file(self) -> str:
-        """Read `cont_file` and assign its lines to theirs `spws`."""
-        lines = self.cont_file.read_text().split('\n')
-        mapped = {}
-        for spws, line in zip(self.spws, lines):
-            mapped.update({spw: line for spw in spws.split(',')})
-        mapped = ','.join(map(lambda x: f'{x[0]}:{x[1]}',
-                              sorted(mapped.items())))
+    def get_uvname(self, uvtype: str):
+        """Get uvdata name from `uvtype`."""
+        if uvtype == 'continuum':
+            uvdata = self.uvcontinuum
+        elif uvtype == 'uvcontsub':
+            uvdata = self.uvcontsub
+        else:
+            uvdata = self.uvdata
+        return uvdata
 
-        return mapped
+    def get_uvsuffix(self, uvtype: str):
+        """Get a suffix for file names from `uvtype`."""
+        if uvtype == 'continuum':
+            suffix = '.cont'
+        elif uvtype == 'uvcontsub':
+            suffix = '.contsub'
+        else:
+            suffix = ''
+        return suffix
+
+    def _flags_from_cont_file(self) -> Dict:
+        """Read line flags from `cont_file`."""
+        # Read file
+        with self.cont_file.open() as cfile:
+            lines = cfile.readlines()
+
+        # Find source and get flags
+        is_field = False
+        flags = {}
+        spw_orig = list(map(int, self.config['split']['spw'].split(',')))
+        for line in lines:
+            if line.startswith('Field') and self.name in line:
+                is_field = True
+                continue
+            elif line.startswith('Field') and is_field:
+                break
+            if is_field and 'SpectralWindow' in line:
+                number = int(line.split()[1])
+                spw = spw_orig.index(number)
+            elif '~' not in line:
+                continue
+            elif is_field and '~' in line:
+                if spw not in flags:
+                    flags[spw] = [line.split()[0]]
+                else:
+                    flags[spw].append(line.split()[0])
+        
+        # Copy flags for multi EBs
+        final_flags = {}
+        for i, spws in enumerate(self.spws):
+            for spw in map(int, spws.split(',')):
+                final_flags[spw] = flags[i]
+        final_flags = dict(sorted(final_flags.items()))
+
+        return final_flags
+
+    def get_line_flags(self,
+                       suffix: str,
+                       invert: bool = False,
+                       mask_borders: bool = False,
+                       resume: bool = False) -> str:
+        """Read `cont_file` and assign its lines to theirs `spws`."""
+        flag_file = self.uvdata.with_suffix(f'{suffix}.json')
+        if flag_file.is_file() and resume:
+            flags = json.loads(flag_file.read_text())
+        else:
+            flags = self._flags_from_cont_file()
+            self.log.debug('Flags (frequency): %s', flags)
+            flags = flags_freqs_to_channels(flags, self.uvdata, invert=invert,
+                                            mask_borders=mask_borders)
+            flag_file.write_text(json.dumps(flags, indent=4))
+        self.log.debug('Flags (channels): %s', flags)
+
+        return flags
 
     def get_image_scales(self,
+                         uvtype: str = '',
                          spw: Optional[int] = None,
                          beam_oversample: int = 5,
                          sigfig: int = 2,
                          pbcoverage: float = 1.) -> Tuple[str, int]:
         """Get cell and image sizes."""
         # Get parameters from MS
-        low_freq, high_freq, longest_baseline = extrema_ms(self.uvdata, spw=spw)
+        uvdata = self.get_uvname(uvtype)
+        low_freq, high_freq, longest_baseline = extrema_ms(uvdata, spw=spw)
         self.log.info('Frequency range: %s - %s', low_freq, high_freq)
         self.log.info('Longest baseline: %s', longest_baseline)
 
@@ -197,6 +288,7 @@ class FieldHandler:
     def clean_data(self,
                    section: str,
                    imagename: Path,
+                   uvtype: str = '',
                    nproc: int = 5,
                    resume: bool = False,
                    **tclean_args):
@@ -207,6 +299,7 @@ class FieldHandler:
         Args:
           section: configuration section.
           imagename: image directory path.
+          uvtype: optional; type of uvdata to clean.
           nproc: optional; number of processors for parallel clean.
           resume: optional; resume where it was left?
           tclean_args: optional; additional arguments for tclean.
@@ -223,12 +316,14 @@ class FieldHandler:
             os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
         # Run tclean
-        tclean_parallel(self.uvdata, imagename.with_name(imagename.stem),
+        uvdata = self.get_uvname(uvtype)
+        tclean_parallel(uvdata, imagename.with_name(imagename.stem),
                         nproc, kwargs, log=self.log)
 
     def clean_per_spw(self,
                       section: str,
                       outdir: Path = Path('./'),
+                      uvtype: str = '',
                       nproc: int = 5,
                       resume: bool = False,
                       **tclean_args):
@@ -239,6 +334,7 @@ class FieldHandler:
         Args:
           section: configuration section.
           outdir: output directory path.
+          uvtype: optional; type of uvdata to clean.
           nproc: optional; number of processors for parallel clean.
           resume: optional; resume where it was left?
           tclean_args: optional; additional arguments for tclean.
@@ -246,7 +342,9 @@ class FieldHandler:
         # Iterate over spws
         for i, spw in enumerate(self.spws):
             # Clean args
-            imagename = outdir / f'{self.name}_{self.array}_spw{i}.image'
+            suffix = self.get_uvsuffix(uvtype)
+            imagename = outdir / (f'{self.name}_{self.array}_spw{i}'
+                                  f'{suffix}.image')
 
             # Check for files
             if imagename.exists() and resume:
@@ -270,29 +368,32 @@ class FieldHandler:
                     impars['imsize'] = f'{new_imsize}'
 
             # Run clean
-            self.clean_data(section, imagename, nproc=nproc, resume=resume,
-                            spw=spw, **tclean_args, **impars)
+            self.clean_data(section, imagename, uvtype=uvtype, nproc=nproc,
+                            resume=resume, spw=spw, **tclean_args, **impars)
+            print('-' * 80)
 
     def contsub(self,
-                config: SectionProxy,
-                skip: bool = False) -> None:
+                section: str = 'contsub',
+                resume: bool = False) -> None:
         """Run `uvcontsub` to obtain continuum subtracted visibilities."""
-        outputvis = self.uvdata.with_suffix('.ms.contsub')
-        val_step = validate_step(skip, outputvis)
+        val_step = validate_step(resume, self.uvcontsub, log=self.log.warning)
         if not val_step:
             return
 
         # Prepare input
-        fitspec = self.map_cont_file()
-        fitorder = config.getint('fitorder')
+        suffix = self.get_uvsuffix('uvcontsub')
+        mask_borders = self.config.getboolean(section, 'mask_borders')
+        fitspec = self.get_line_flags(suffix, invert=True,
+                                      mask_borders=mask_borders, resume=resume)
+        fitorder = self.config.getint(section, 'fitorder')
 
         # Run uvcontsub
-        uvcontsub(vis=f'{self.uvdata}', outputvis=f'{outputvis}',
+        uvcontsub(vis=f'{self.uvdata}', outputvis=f'{self.uvcontsub}',
                   fitspec=fitspec, fitorder=fitorder)
 
-    def continuum(self,
-                  config: SectionProxy,
-                  skip: bool = False) -> None:
+    def continuum_vis(self,
+                      section: str = 'continuum',
+                      resume: bool = False) -> None:
         """Generate continuum visibilities.
 
         It generates 2 visibility sets:
@@ -300,29 +401,50 @@ class FieldHandler:
         - Average of all the channels using the input width.
         - Average of the line free channels using the `cont_file` and width.
         """
+        # Check cont_file
+        if self.cont_file is None:
+            self.log.warning('Continuum file not assigned, nothing to do')
+            return
+
         # Check files
-        allchans = self.uvdata.with_suffix('.ms.cont_all')
-        linefree = self.uvdata.with_suffix('.ms.cont')
-        val_all = validate_step(skip, allchans)
-        val_lf = validate_step(skip, linefree)
+        allchans = self.uvdata.with_suffix('.cont_all.ms')
+        linefree = self.uvcontinuum
+        val_all = validate_step(resume, allchans, log=self.log.warning)
+        val_lf = validate_step(resume, linefree, log=self.log.warning)
 
         # Values from config
-        width = config['width']
-        datacolumn = config['datacolumn']
+        width = self.config.get(section, 'width', fallback=None)
+        if width is not None:
+            width = list(map(int, width.split(',')))
+        else:
+            width = continuum_bins(self.uvdata, u.Quantity(self.array))
+            self.config[section]['width'] = ','.join(map(str, width))
+            self.write_config()
+        self.log.info('Continuum bins: %s', width)
+        datacolumn = self.config[section]['datacolumn']
 
         if val_all:
             # Average channels without flagging
             split_ms(vis=f'{self.uvdata}', outputvis=f'{allchans}', width=width,
-                  datacolumn=datacolumn)
+                     datacolumn=datacolumn)
         if val_lf:
             # Get line free channels
-            cont_chans = self.map_cont_file()
+            suffix = self.get_uvsuffix('continuum')
+            flag_chans = self.get_line_flags(suffix, resume=resume)
 
             # Split the uvdata
             # WARNING: this needs to be tested
             # otherwise, use flagmanager and then split the visibilities
+            flagmanager(vis=f'{self.uvdata}', mode='save',
+                        versionname='before_cont_flags')
+            flagdata(vis=f'{self.uvdata}', mode='manual', spw=flag_chans,
+                     flagbackup=False)
             split_ms(vis=f'{self.uvdata}', outputvis=f'{linefree}',
-                    spw=cont_chans, width=width)
+                     width=width, datacolumn=datacolumn)
+            flagmanager(vis=f'{self.uvdata}', mode='restore',
+                        versionname='before_cont_flags')
+
+        return linefree, allchans
 
 @dataclass
 class FieldManager:
@@ -347,14 +469,17 @@ class FieldManager:
     """Default configuration file name."""
     configfile: InitVar[Optional[Path]] = None
     """Configuration file name."""
+    cont_file: InitVar[Optional[Path]] = None
+    """Continuum file."""
 
     def __post_init__(self, field, original_uvdata, datadir, default_config,
-                      configfile):
+                      configfile, cont_file):
         if original_uvdata is not None:
             self.append_data(field=field,
                              original_uvdata=original_uvdata,
                              default_config=default_config,
                              configfile=configfile,
+                             cont_file=cont_file,
                              datadir=datadir)
 
     @property
@@ -379,6 +504,7 @@ class FieldManager:
                     #split_uvdata: Optional[Path] = None,
                     default_config: Optional[Path] = None,
                     configfile: Optional[Path] = None,
+                    cont_file: Optional[Path] = None,
                     datadir: Optional[Path] = None):
         """Update information in field."""
         if original_uvdata is not None:
@@ -396,6 +522,7 @@ class FieldManager:
                                         array,
                                         default_config=default_config,
                                         configfile=configfile,
+                                        cont_file=cont_file,
                                         datadir=datadir,
                                         neb=neb)
             else:
@@ -457,8 +584,12 @@ class FieldManager:
                 self.log.info('Concatenating MSs to: %s', concatvis)
                 concat(vis=vis, concatvis=f'{concatvis}')
 
+            # Update handler spws
+            handler.update_spws()
+
     def dirty_cubes(self,
                     section: str = 'dirty_cubes',
+                    uvtype: str = '',
                     nproc: int = 5,
                     arrays: Optional[Sequence[str]] = None,
                     outdir: Optional[Path] = None):
@@ -489,7 +620,54 @@ class FieldManager:
             # Clean spws
             self.log.info('Computing dirty cubes for array: %s', array)
             handler.clean_per_spw(section, outdir=outdir, nproc=nproc,
-                                  resume=self.resume, niter=0)
+                                  uvtype=uvtype, resume=self.resume, niter=0)
+            print('=' * 80)
+
+    def contsub_visibilities(self,
+                             dirty_images: bool = False,
+                             nproc: int = 5):
+        """Compute continuum subtracted visibilities."""
+        for array, handler in self.data_handler.items():
+            self.log.info('Computing contsub visibilities for array: %s', array)
+            handler.contsub(resume=self.resume)
+
+            # Compute dirty
+            if dirty_images:
+                self.dirty_cubes(uvtype='uvcontsub', nproc=nproc)
+
+    def continuum_visibilities(self,
+                               control_image: bool = False,
+                               nproc: int = 5,
+                               outdir: Optional[Path] = None):
+        """Compute continuum visibilities for data."""
+        for array, handler in self.data_handler.items():
+            self.log.info('Computing cont visibilities for array: %s', array)
+            handler.continuum_vis(resume=self.resume)
+
+            # Make a control image
+            if control_image:
+                # Parameters
+                tclean_args = {}
+                section = 'continuum'
+                uvtype = 'continuum'
+                tclean_args['cell'] = handler.config.get(section, 'cell',
+                                                         fallback=None)
+                tclean_args['imsize'] = handler.config.get(section, 'imsize',
+                                                           fallback=None)
+                if tclean_args['cell'] is None or tclean_args['imsize'] is None:
+                    impars = handler.get_image_scales(uvtype=uvtype)
+                    if tclean_args['cell'] is None:
+                        tclean_args['cell'] = impars[0]
+                    if tclean_args['imsize'] is None:
+                        tclean_args['imsize'] = f'{impars[1]}'
+                if outdir is None:
+                    outdir = handler.uvdata.parent / f'{section}_control'
+                outdir.mkdir(exist_ok=True)
+                suffix = handler.get_uvsuffix(uvtype)
+                imagename = outdir / f'{handler.name}_{array}{suffix}.image'
+                handler.clean_data(section, imagename, uvtype=uvtype,
+                                   nproc=nproc, resume=self.resume,
+                                   **tclean_args)
 
     def write_configs(self):
         """Write configs to disk."""
@@ -508,6 +686,7 @@ class DataManager(Dict):
                     default_config: Path,
                     log: 'logging.Logger',
                     datadir: Path = Path('./'),
+                    cont: Optional[Sequence[Path]] = None,
                     resume: bool = False):
         """Generate a `DataManager` from input MSs.
 
@@ -516,11 +695,20 @@ class DataManager(Dict):
         """
         # First pass: iterate over uvdata and define fields
         fields = {}
-        for ms in uvdata:
+        for i, ms in enumerate(uvdata):
             print('=' * 80)
             log.info('Operating over MS: %s', ms)
             targets = get_targets(ms)
             log.info('Fields in MS: %s', targets)
+
+            # Continuum file
+            if cont is not None:
+                if len(cont) == 1:
+                    cont_file = cont[0]
+                else:
+                    cont_file = cont[i]
+            else:
+                cont_file = None
 
             # Iterate over fields
             for field in targets:
@@ -534,6 +722,7 @@ class DataManager(Dict):
                 field_info = FieldManager(log, resume=resume, field=field,
                                           original_uvdata=ms,
                                           default_config=default_config,
+                                          cont_file=cont_file,
                                           datadir=datadir)
                 fields[field] = field_info
 
@@ -553,6 +742,7 @@ class DataManager(Dict):
                      configfiles: Path,
                      log: 'logging.Logger',
                      datadir: Path = Path('./'),
+                     cont: Optional[Sequence[Path]] = None,
                      resume: bool = False):
         """Generate a `DataManager` from input configuration files.
 
@@ -560,9 +750,14 @@ class DataManager(Dict):
         """
         # Iterate over files
         fields = {}
-        for cfg in configfiles:
+        for i, cfg in enumerate(configfiles):
             # Create field handler
-            handler = FieldHandler(configfile=cfg, datadir=datadir, log=log)
+            if cont is not None:
+                cont_file = cont[i]
+            else:
+                cont_file = None
+            handler = FieldHandler(configfile=cfg, datadir=datadir,
+                                   cont_file=cont_file, log=log)
 
             # Update field
             if (field := handler.field) in fields:
