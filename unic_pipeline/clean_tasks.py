@@ -14,7 +14,7 @@ from .utils import get_func_params
 def get_tclean_params(
     config: SectionProxy,
     required_keys: Sequence[str] = ('cell', 'imsize'),
-    ignore_keys: Sequence[str] = ('vis', 'imagename', 'spw'),
+    ignore_keys: Sequence[str] = ('vis', 'imagename'),
     float_keys: Sequence[str]  = ('robust', 'pblimit', 'pbmask'),
     int_keys: Sequence[str] = ('niter', 'chanchunks'),
     bool_keys: Sequence[str] = ('interactive', 'parallel', 'pbcor',
@@ -90,6 +90,6 @@ def tclean_parallel(vis: Path,
         if log is not None:
             log.info('Running: %s', cmd)
         # pylint: disable=R1732
-        #proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
-        #proc.wait()
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
+        proc.wait()
 
