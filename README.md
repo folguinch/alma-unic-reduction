@@ -10,7 +10,7 @@ virtual environment.
 To install the ALMA-UNIC pipeline:
 
 ```bash
-pip install git+
+pip install git+git@github.com:alma-unic/alma-unic-reduction.git
 ```
 
 For tasks requiring tclean, a monolithic CASA version is needed. If you prefer a
@@ -33,7 +33,7 @@ In general, to install in editable mode run:
 # Clone to your desired directory
 mkdir -p /my/preferred/directory
 cd /my/preferred/directory
-git clone ....
+git clone git@github.com:alma-unic/alma-unic-reduction.git
 
 # Install with pip in editable mode
 cd unic-pipeline
