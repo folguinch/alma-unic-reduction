@@ -383,9 +383,9 @@ class FieldHandler:
         # Prepare input
         suffix = self.get_uvsuffix('uvcontsub')
         mask_borders = self.config.getboolean(section, 'mask_borders')
-        fitspec = self.get_line_flags(suffix, invert=True,
+        fitspec = self.get_line_flags(suffix, invert=False,
                                       mask_borders=mask_borders, resume=resume)
-        fitorder = self.config.getint(section, 'fitorder')
+        fitorder = self.config.getint(section, 'fitorder', fallback=1)
 
         # Run uvcontsub
         uvcontsub(vis=f'{self.uvdata}', outputvis=f'{self.uvcontsub}',
@@ -430,7 +430,7 @@ class FieldHandler:
         if val_lf:
             # Get line free channels
             suffix = self.get_uvsuffix('continuum')
-            flag_chans = self.get_line_flags(suffix, resume=resume)
+            flag_chans = self.get_line_flags(suffix, invert=True, resume=resume)
 
             # Split the uvdata
             # WARNING: this needs to be tested
