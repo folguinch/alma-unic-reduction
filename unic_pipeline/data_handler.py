@@ -1,4 +1,4 @@
-"""Handler for the data."""
+"""Handlers for managing and processing data."""
 from typing import Optional, List, Dict, Tuple, Sequence
 from configparser import ConfigParser, ExtendedInterpolation
 from dataclasses import dataclass, InitVar
@@ -15,7 +15,7 @@ import astropy.units as u
 from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     find_spws, extrema_ms, gaussian_beam,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
-                    flags_freqs_to_channels)
+                    flags_from_cont_ranges, clumps_to_casa)
 from .clean_tasks import get_tclean_params, tclean_parallel
 from .common_types import SectionProxy
 
@@ -37,16 +37,16 @@ class FieldHandler:
     """Measurement set directory."""
     configfile: Optional[Path] = None
     """Configuration file name."""
-    default_config: InitVar[Optional[Path]] = None
-    """Default configuration file name."""
-    datadir: InitVar[Path] = Path('./').resolve()
-    """Data directory."""
     neb: Optional[int] = None
     """Number of execution blocks in the uvdata."""
     cont_file: Optional['pathlib.Path'] = None
     """Continuum file."""
     spws: List[str] = dcfield(default_factory=list, init=False)
     """List with spw values."""
+    default_config: InitVar[Optional[Path]] = None
+    """Default configuration file name."""
+    datadir: InitVar[Path] = Path('./').resolve()
+    """Data directory."""
 
     def __post_init__(self, default_config, datadir):
         # Check log
@@ -149,7 +149,11 @@ class FieldHandler:
 
     def read_config(self,
                     default_config: Optional['pathlib.Path'] = None) -> None:
-        """Load a configuration file."""
+        """Load a configuration file.
+        
+        Args:
+          default_config: Optional; Default configuration scheme.
+        """
         self.config = ConfigParser(interpolation=ExtendedInterpolation())
         if default_config is not None and default_config.is_file():
             self.log.info(f'Reading default configuration: {default_config}')
@@ -165,7 +169,12 @@ class FieldHandler:
                                         'neb': f'{self.neb}'})
 
     def update_config(self, write: bool = False, **sections):
-        """Update and write the configuration file."""
+        """Update and write the configuration file.
+        
+        Args:
+          write: Optional; Save to disk.
+          sections: Sections to update with values.
+        """
         # Update file
         self.config.read_dict(sections)
 
@@ -200,15 +209,15 @@ class FieldHandler:
             suffix = ''
         return suffix
 
-    def _flags_from_cont_file(self) -> Dict:
-        """Read line flags from `cont_file`."""
+    def _cont_from_file(self) -> Dict[int, List[str]]:
+        """Read continuum ranges from `cont_file`."""
         # Read file
         with self.cont_file.open() as cfile:
             lines = cfile.readlines()
 
-        # Find source and get flags
+        # Find source and get continuum ranges
         is_field = False
-        flags = {}
+        cont = {}
         spw_orig = list(map(int, self.config['split']['spw'].split(',')))
         for line in lines:
             if line.startswith('Field') and self.name in line:
@@ -222,34 +231,48 @@ class FieldHandler:
             elif '~' not in line:
                 continue
             elif is_field and '~' in line:
-                if spw not in flags:
-                    flags[spw] = [line.split()[0]]
+                if spw not in cont:
+                    cont[spw] = [line.split()[0]]
                 else:
-                    flags[spw].append(line.split()[0])
+                    cont[spw].append(line.split()[0])
         
-        # Copy flags for multi EBs
-        final_flags = {}
+        # Copy continuum ranges for multi EBs
+        final_cont = {}
         for i, spws in enumerate(self.spws):
             for spw in map(int, spws.split(',')):
-                final_flags[spw] = flags[i]
-        final_flags = dict(sorted(final_flags.items()))
+                final_cont[spw] = cont[i]
+        final_cont = dict(sorted(final_cont.items()))
 
-        return final_flags
+        return final_cont
 
-    def get_line_flags(self,
-                       suffix: str,
-                       invert: bool = False,
-                       mask_borders: bool = False,
-                       resume: bool = False) -> str:
-        """Read `cont_file` and assign its lines to theirs `spws`."""
+    def get_spectral_ranges(self,
+                            suffix: str,
+                            invert: bool = False,
+                            mask_borders: bool = False,
+                            resume: bool = False) -> str:
+        """Get spectral ranges from continuum file.
+        
+        The `cont.dat` contains the spectral ranges where the continuum is
+        calculated. The `invert` parameter allows to select the channels where
+        lines are.
+
+        Args:
+          suffix: File name suffix.
+          invert: Optional; Reverse channel selection?
+          mask_borders: Optional; Mask 10 channels at beginning and end?
+          reume: Optional; Resume where it was left last time?
+
+        Returns:
+          A CASA compatible `spw` selection.
+        """
         flag_file = self.uvdata.with_suffix(f'{suffix}.json')
         if flag_file.is_file() and resume:
             flags = json.loads(flag_file.read_text())
         else:
-            flags = self._flags_from_cont_file()
+            flags = self._cont_from_file()
             self.log.debug('Flags (frequency): %s', flags)
-            flags = flags_freqs_to_channels(flags, self.uvdata, invert=invert,
-                                            mask_borders=mask_borders)
+            flags = flags_from_cont_ranges(flags, self.uvdata, invert=invert,
+                                           mask_borders=mask_borders)
             flag_file.write_text(json.dumps(flags, indent=4))
         self.log.debug('Flags (channels): %s', flags)
 
@@ -260,8 +283,19 @@ class FieldHandler:
                          spw: Optional[int] = None,
                          beam_oversample: int = 5,
                          sigfig: int = 2,
-                         pbcoverage: float = 1.) -> Tuple[str, int]:
-        """Get cell and image sizes."""
+                         pbcoverage: float = 2.) -> Tuple[str, int]:
+        """Get cell and image sizes.
+        
+        Args:
+          uvtype: Optional; Type of uvdata to image.
+          spw: Optional; Select spectral window.
+          beam_oversample: Optional; Number of pixels per beam.
+          sigfig: Optional; Significant figures of the pixel size.
+          pbcoverage: Optional; Number of PB sizes for the image size.
+
+        Returns:
+          CASA compatible cell size and image size.
+        """
         # Get parameters from MS
         uvdata = self.get_uvname(uvtype)
         low_freq, high_freq, longest_baseline = extrema_ms(uvdata, spw=spw)
@@ -278,7 +312,7 @@ class FieldHandler:
         su = synthesisutils()
         cell = round_sigfig(beam / beam_oversample, sigfig=sigfig)
         self.log.info('Estimated cell size: %s', cell)
-        imsize = int(2 * pbsize * pbcoverage / cell)
+        imsize = int(pbsize * pbcoverage / cell)
         self.log.info('Estimated image size: %s', imsize)
         imsize = su.getOptimumSize(imsize)
         self.log.info('Optimal image size: %s', imsize)
@@ -297,12 +331,12 @@ class FieldHandler:
         Arguments given under `tclean_args` replace the values from `config`.
 
         Args:
-          section: configuration section.
-          imagename: image directory path.
-          uvtype: optional; type of uvdata to clean.
-          nproc: optional; number of processors for parallel clean.
-          resume: optional; resume where it was left?
-          tclean_args: optional; additional arguments for tclean.
+          section: Configuration section.
+          imagename: Image directory path.
+          uvtype: Optional; Type of uvdata to clean.
+          nproc: Optional; Number of processors for parallel clean.
+          resume: Optional; Resume where it was left?
+          tclean_args: Optional; Additional arguments for tclean.
         """
         # tclean args
         config = self.config[section]
@@ -332,12 +366,12 @@ class FieldHandler:
         Arguments given under `tclean_args` replace the values from `config`.
 
         Args:
-          section: configuration section.
-          outdir: output directory path.
-          uvtype: optional; type of uvdata to clean.
-          nproc: optional; number of processors for parallel clean.
-          resume: optional; resume where it was left?
-          tclean_args: optional; additional arguments for tclean.
+          section: Configuration section.
+          outdir: Output directory path.
+          uvtype: Optional; Type of uvdata to clean.
+          nproc: Optional; Number of processors for parallel clean.
+          resume: Optional; Resume where it was left?
+          tclean_args: Optional; Additional arguments for tclean.
         """
         # Iterate over spws
         for i, spw in enumerate(self.spws):
@@ -375,7 +409,12 @@ class FieldHandler:
     def contsub(self,
                 section: str = 'contsub',
                 resume: bool = False) -> None:
-        """Run `uvcontsub` to obtain continuum subtracted visibilities."""
+        """Run `uvcontsub` to obtain continuum subtracted visibilities.
+        
+        Args:
+          section: Optional; Configuration section.
+          resume: Optional; Continue from where it was left?
+        """
         val_step = validate_step(resume, self.uvcontsub, log=self.log.warning)
         if not val_step:
             return
@@ -383,23 +422,31 @@ class FieldHandler:
         # Prepare input
         suffix = self.get_uvsuffix('uvcontsub')
         mask_borders = self.config.getboolean(section, 'mask_borders')
-        fitspec = self.get_line_flags(suffix, invert=False,
-                                      mask_borders=mask_borders, resume=resume)
+        fitspec = self.get_spectral_ranges(suffix, invert=True,
+                                           mask_borders=mask_borders,
+                                           resume=resume)
         fitorder = self.config.getint(section, 'fitorder', fallback=1)
 
         # Run uvcontsub
         uvcontsub(vis=f'{self.uvdata}', outputvis=f'{self.uvcontsub}',
-                  fitspec=fitspec, fitorder=fitorder)
+                  fitspec=clumps_to_casa(fitspec), fitorder=fitorder)
 
     def continuum_vis(self,
                       section: str = 'continuum',
-                      resume: bool = False) -> None:
+                      resume: bool = False) -> Tuple[Path]:
         """Generate continuum visibilities.
 
         It generates 2 visibility sets:
 
         - Average of all the channels using the input width.
         - Average of the line free channels using the `cont_file` and width.
+
+        Args:
+          section: Optional; Configuration section.
+          resume: Optional; Continue from where it was left?
+
+        Returns:
+          The line-free and averaged MS file names.
         """
         # Check cont_file
         if self.cont_file is None:
@@ -430,14 +477,16 @@ class FieldHandler:
         if val_lf:
             # Get line free channels
             suffix = self.get_uvsuffix('continuum')
-            flag_chans = self.get_line_flags(suffix, invert=True, resume=resume)
+            flag_chans = self.get_spectral_ranges(suffix,
+                                                  resume=resume)
+            casa_flag_chans = clumps_to_casa(flag_chans)
 
             # Split the uvdata
             # WARNING: this needs to be tested
             # otherwise, use flagmanager and then split the visibilities
             flagmanager(vis=f'{self.uvdata}', mode='save',
                         versionname='before_cont_flags')
-            flagdata(vis=f'{self.uvdata}', mode='manual', spw=flag_chans,
+            flagdata(vis=f'{self.uvdata}', mode='manual', spw=casa_flag_chans,
                      flagbackup=False)
             split_ms(vis=f'{self.uvdata}', outputvis=f'{linefree}',
                      width=width, datacolumn=datacolumn)
@@ -448,7 +497,7 @@ class FieldHandler:
 
 @dataclass
 class FieldManager:
-    """Manage field information."""
+    """Manage field information for different array configurations."""
     log: 'logging.Logger'
     """Logging object."""
     resume: bool = False
@@ -474,7 +523,9 @@ class FieldManager:
 
     def __post_init__(self, field, original_uvdata, datadir, default_config,
                       configfile, cont_file):
+        # When original_data is given, then split the field and fill the object
         if original_uvdata is not None:
+            self.log.info('Appending data from original MS')
             self.append_data(field=field,
                              original_uvdata=original_uvdata,
                              default_config=default_config,
@@ -484,67 +535,80 @@ class FieldManager:
 
     @property
     def name(self):
+        """Name associated to the field."""
         return self.data_handler[list(self.data_handler.keys())[0]].field
 
     def datadir(self, array: str) -> Path:
+        """Data directory where uvdata is stored."""
         return self.data_handler[array].uvdata.parent
 
     def _init_data_handler(self,
                            field: str,
                            array: str,
                            **kwargs):
+        # Shortcut
         self.data_handler[array] = FieldHandler(field,
                                                 array,
                                                 self.log,
                                                 **kwargs)
 
     def append_data(self,
-                    field: Optional[str] = None,
-                    original_uvdata: Optional[Path] = None,
-                    #split_uvdata: Optional[Path] = None,
-                    default_config: Optional[Path] = None,
-                    configfile: Optional[Path] = None,
-                    cont_file: Optional[Path] = None,
-                    datadir: Optional[Path] = None):
-        """Update information in field."""
-        if original_uvdata is not None:
-            # Store original data
-            array = get_array(original_uvdata)
-            self.log.debug('Data array: %s', array)
-            self.original[array] += (original_uvdata,)
-            self.log.debug('Original data: %s', self.original)
+                    original_uvdata: Path,
+                    field: str,
+                    default_config: Path,
+                    configfile: Path,
+                    cont_file: Path,
+                    datadir: Path):
+        """Append data from original calibrated MS.
+        
+        Args:
+          original_uvdata: Original uv data.
+          field: Field name.
+          default_config:
+        """
+        # Store original data for each array and calculate the number of EBs
+        array = get_array(original_uvdata)
+        self.log.info('Data array: %s', array)
+        self.original[array] += (original_uvdata,)
+        self.log.debug('Original data: %s', self.original)
+        neb = len(self.original[array])
 
-            # Update handler
-            neb = len(self.original[array])
-            if (handler:= self.data_handler.get(array)) is None:
-                self.log.debug('Generating new data handler')
-                self._init_data_handler(field,
-                                        array,
-                                        default_config=default_config,
-                                        configfile=configfile,
-                                        cont_file=cont_file,
-                                        datadir=datadir,
-                                        neb=neb)
-            else:
-                self.log.debug('Updating data handler')
-                handler.neb = neb
-                handler.update_config(DEFAULT={'neb': f'{neb}'})
+        # Update or create new FieldHandler
+        if (handler:= self.data_handler.get(array)) is None:
+            self.log.debug('Generating new data handler')
+            self._init_data_handler(field,
+                                    array,
+                                    default_config=default_config,
+                                    configfile=configfile,
+                                    cont_file=cont_file,
+                                    datadir=datadir,
+                                    neb=neb)
+        else:
+            self.log.debug('Updating data handler')
+            handler.neb = neb
+            handler.update_config(DEFAULT={'neb': f'{neb}'})
 
-            # Split?
-            split = self.datadir(array) / f'{self.name}_{array}_eb{neb}.ms'
-            if split.exists() and not self.resume:
-                self.log.warning('Deleting split ms: %s', split)
-                os.system(f'rm -rf {split}')
-            if not split.exists():
-                self.log.info('Splitting input ms to: %s', split)
-                self.split_field(array, original_uvdata, split)
-            else:
-                self.log.info('Found split ms: %s', split)
-            self.split[array] += (split,)
-            self.log.debug('Split data: %s', self.split)
+        # Split the data from original MS?
+        split = self.datadir(array) / f'{self.name}_{array}_eb{neb}.ms'
+        if split.exists() and not self.resume:
+            self.log.warning('Deleting split ms: %s', split)
+            os.system(f'rm -rf {split}')
+        if not split.exists():
+            self.log.info('Splitting input ms to: %s', split)
+            self.split_field(array, original_uvdata, split)
+        else:
+            self.log.info('Found split ms: %s', split)
+        self.split[array] += (split,)
+        self.log.debug('Split data: %s', self.split)
 
     def split_field(self, array: str, uvdata: Path, splitvis: Path):
-        """Split field from input uvdata."""
+        """Split field from input uvdata.
+        
+        Args:
+          array: Name of the array.
+          uvdata: MS file name.
+          splitvis: Output MS file name.
+        """
         # Split parameters
         if ((spw := self.data_handler[array].config.get(
             'split', 'spw', fallback=None)) is None):
@@ -572,9 +636,9 @@ class FieldManager:
             elif concatvis.exists() and self.resume:
                 continue
 
-            # Concat
+            # Concat data if needed
             if len(vis) == 0:
-                self.log.warning('Data handler created but no data: %s', array)
+                self.log.error('Data handler created but no data: %s', array)
                 raise ValueError('Missing data')
             elif len(vis) == 1:
                 self.log.info('Moving %s to: %s', vis[0], concatvis)
@@ -593,7 +657,20 @@ class FieldManager:
                     nproc: int = 5,
                     arrays: Optional[Sequence[str]] = None,
                     outdir: Optional[Path] = None):
-        """Calculate dirty cubes per spw."""
+        """Calculate dirty cubes per spw.
+        
+        The argument `uvtype` is used to determine the uv data file name.
+        Available values are `['', 'continuum', 'uvcontsub']` to compute dirty
+        images from the calibrated data, continuum data, or continuum
+        subtracted data, respectively.
+
+        Args:
+          section: Optional; Configuration section.
+          uvtype: Optional; Type of uvdata to image.
+          nproc: Optional; Number of parallel processes.
+          arrays: Optional; Array configurations to image.
+          outdir: Optional; Output directory.
+        """
         # Select arrays
         if arrays is None:
             arrays = self.data_handler.keys()
@@ -626,7 +703,12 @@ class FieldManager:
     def contsub_visibilities(self,
                              dirty_images: bool = False,
                              nproc: int = 5):
-        """Compute continuum subtracted visibilities."""
+        """Compute continuum subtracted visibilities.
+        
+        Args:
+          dirty_images: Optional; Compute dirty images?
+          nproc: Optional; Number of parallel processes for cleaning.
+        """
         for array, handler in self.data_handler.items():
             self.log.info('Computing contsub visibilities for array: %s', array)
             handler.contsub(resume=self.resume)
@@ -639,7 +721,13 @@ class FieldManager:
                                control_image: bool = False,
                                nproc: int = 5,
                                outdir: Optional[Path] = None):
-        """Compute continuum visibilities for data."""
+        """Compute continuum visibilities for data.
+        
+        Args:
+          control_image: Optional; Calculate control image?
+          nproc: Optional; Number of parallel processes for cleaning.
+          outdir: Optional; Output directory.
+        """
         for array, handler in self.data_handler.items():
             self.log.info('Computing cont visibilities for array: %s', array)
             handler.continuum_vis(resume=self.resume)
@@ -675,14 +763,17 @@ class FieldManager:
             handler.write_config()
 
 class DataManager(Dict):
-    """Manage pipeline data."""
+    """Manage pipeline data.
+    
+    It associates each field with a `FieldManager`.
+    """
     def __init__(self, log: 'logging.Logger', **kwargs):
         self.log = log
         super().__init__(kwargs)
 
     @classmethod
     def from_uvdata(cls,
-                    uvdata: Path,
+                    uvdata: Sequence[Path],
                     default_config: Path,
                     log: 'logging.Logger',
                     datadir: Path = Path('./'),
@@ -692,6 +783,14 @@ class DataManager(Dict):
 
         It uses the input uvdata to find target fields and generates a
         configuration file for each.
+
+        Args:
+          uvdata: MS file name(s).
+          default_config: A default configuration skeleton.
+          log: A `logging` object.
+          datadir: Optional; Where the data generated will be stored.
+          cont: Optional; A list of continuum files for each `uvdata`.
+          resume: Optional; Continue from where it was left?
         """
         # First pass: iterate over uvdata and define fields
         fields = {}
@@ -739,7 +838,7 @@ class DataManager(Dict):
 
     @classmethod
     def from_configs(cls,
-                     configfiles: Path,
+                     configfiles: Sequence[Path],
                      log: 'logging.Logger',
                      datadir: Path = Path('./'),
                      cont: Optional[Sequence[Path]] = None,
@@ -747,6 +846,13 @@ class DataManager(Dict):
         """Generate a `DataManager` from input configuration files.
 
         At the moment it assumes the data is ready for processesing.
+
+        Args:
+          configfiles: A list of configuration files.
+          log: A `logging` object.
+          datadir: Optional; Where the data generated will be stored.
+          cont: Optional; A list of continuum files for each `uvdata`.
+          resume: Optional; Continue from where it was left?
         """
         # Iterate over files
         fields = {}

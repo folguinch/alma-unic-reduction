@@ -163,44 +163,78 @@ def continuum_bins(uvdata: 'pathlib.Path',
 
     return bins
 
-def flags_freqs_to_channels(flags: Dict[int, List[str]],
-                            uvdata: 'pathlib.Path',
-                            invert: bool = False,
-                            mask_borders: bool = False,
-                            border: int = 10) -> str:
-    """Convert flags in LSRK frequencies to channels."""
+def flags_from_cont_ranges(ranges: Dict[int, List[str]],
+                           uvdata: 'pathlib.Path',
+                           invert: bool = False,
+                           mask_borders: bool = False,
+                           border: int = 10) -> Dict[int, List[Tuple[int]]]:
+    """Convert continuum ranges into channel flags.
+    
+    It uses input continuum ranges in LSRK frequency and convert them into
+    channel flags. The flags correspond to channels that will be flagged to
+    compute the continuum.
+
+    If `invert` is set, then the output channel ranges will correspond to
+    channels that are not flagged.
+
+    Args:
+      ranges: Ranges of continuum frequencies per SPW.
+      uvdata: UV data to extract the frequency axis.
+      invert: Optional; Return unflagged data?
+      mask_borders: Optional; Mask (flag) channels at the borders?
+      border: Optional; Amount of channels to mask (flag).
+
+    Returns:
+      A dictionary associating each SPW with flagged channel ranges.
+    """
     mstool = ms()
     mstool.open(f'{uvdata}')
-    flags_chan = []
-    for spw, flags_freq in flags.items():
+    flags_chan = {}
+    for spw, rng_spw in ranges.items():
         # Convert to masked array
         freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK') * u.Hz
         freqs = np.ma.array(freqs.to(u.GHz).value)
+
+        # Mask the frequencies
+        for rng in rng_spw:
+            freq_ran = list(map(lambda x: u.Quantity(x), rng.split()[0].split('~')))
+            freq_ran[0] = freq_ran[0] * freq_ran[1].unit
+            freq_ran = freq_ran[0].to(u.GHz).value, freq_ran[1].to(u.GHz).value
+            freqs = np.ma.masked_inside(freqs, *freq_ran)
+
+        # Invert channel selection to convert into flags
+        freqs = np.ma.array(freqs.data, mask=~freqs.mask)
+
+        # Mask borders
         if mask_borders:
             freqs[:border] = np.ma.masked
             freqs[-border:] = np.ma.masked
 
-        # Mask the frequencies
-        for flag in flags_freq:
-            aux = list(map(lambda x: u.Quantity(x), flag.split()[0].split('~')))
-            aux[0] = aux[0] * aux[1].unit
-            aux = aux[0].to(u.GHz).value, aux[1].to(u.GHz).value
-            freq_low = np.min(aux)
-            freq_high = np.max(aux)
-            freqs = np.ma.masked_where((freqs>=freq_low) & (freqs<=freq_high),
-                                       freqs)
-
-        # Convert to indices
+        # Clump (un)masked data
         if invert:
             clumps = np.ma.clump_unmasked(freqs)
         else:
             clumps = np.ma.clump_masked(freqs)
-        spw_flags = []
-        for clump in clumps:
-            spw_flags.append(f'{clump.start}~{clump.stop-1}')
-        flags_chan.append(f'{spw}:' + ';'.join(spw_flags))
 
-    return ','.join(flags_chan)
+        # Convert to indices
+        clump_ind = []
+        for clump in clumps:
+            clump_ind.append((clump.start, clump.stop-1))
+        flags_chan[spw] = clump_ind
+
+    # Close tool
+    mstool.close()
+
+    return flags_chan
+
+def clumps_to_casa(clumps_per_spw: Dict[int, List[slice]]) -> str:
+    """Convert ranges per SPW into casa format."""
+    ranges = []
+    for spw, clumps in clumps_per_spw.items():
+        spw_ranges = map(lambda x: '{0}~{1}'.format(*x), clumps)
+        ranges.append(f'{spw}:' + ';'.join(spw_ranges))
+
+    return ','.join(ranges)
 
 def find_spws(field: str, uvdata: 'pathlib.Path') -> str:
     """Filter science spws for source."""
