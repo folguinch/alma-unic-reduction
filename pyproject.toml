@@ -12,6 +12,8 @@ casatools = "^6.6.0.20"
 casatasks = "^6.6.0.20"
 casadata = "^2023.9.18"
 astropy = "^6.0.0"
+spectral-cube = "^0.6.5"
+matplotlib = "^3.8.2"
 
 
 [build-system]
