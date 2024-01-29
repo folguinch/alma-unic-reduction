@@ -150,7 +150,7 @@ def continuum_bins(uvdata: 'pathlib.Path',
     bandwidths = metadata.bandwidths()
     bins = []
     for i in range(metadata.nspw()):
-        low_freq, high_freq, baseline = extrema_ms(uvdata, spw=i)
+        low_freq, _, baseline = extrema_ms(uvdata, spw=i)
         max_width = max_chan_width(low_freq, diameter, baseline)
         ngroups = bandwidths[i] * u.Hz / max_width
         ngroups = int(ngroups.to(1))
@@ -197,7 +197,7 @@ def flags_from_cont_ranges(ranges: Dict[int, List[str]],
 
         # Mask the frequencies
         for rng in rng_spw:
-            freq_ran = list(map(lambda x: u.Quantity(x), rng.split()[0].split('~')))
+            freq_ran = list(map(u.Quantity, rng.split()[0].split('~')))
             freq_ran[0] = freq_ran[0] * freq_ran[1].unit
             freq_ran = freq_ran[0].to(u.GHz).value, freq_ran[1].to(u.GHz).value
             freqs = np.ma.masked_inside(freqs, *freq_ran)
@@ -219,7 +219,7 @@ def flags_from_cont_ranges(ranges: Dict[int, List[str]],
         # Convert to indices
         clump_ind = []
         for clump in clumps:
-            clump_ind.append((clump.start, clump.stop-1))
+            clump_ind.append((int(clump.start), int(clump.stop-1)))
         flags_chan[spw] = clump_ind
 
     # Close tool
@@ -227,11 +227,11 @@ def flags_from_cont_ranges(ranges: Dict[int, List[str]],
 
     return flags_chan
 
-def clumps_to_casa(clumps_per_spw: Dict[int, List[slice]]) -> str:
+def clumps_to_casa(clumps_per_spw: Dict[int, List[Tuple[int]]]) -> str:
     """Convert ranges per SPW into casa format."""
     ranges = []
     for spw, clumps in clumps_per_spw.items():
-        spw_ranges = map(lambda x: '{0}~{1}'.format(*x), clumps)
+        spw_ranges = map(lambda x: f'{x[0]}~{x[1]}', clumps)
         ranges.append(f'{spw}:' + ';'.join(spw_ranges))
 
     return ','.join(ranges)

@@ -7,7 +7,7 @@ from pathlib import Path
 import json
 import os
 
-from casatasks import uvcontsub, concat, flagdata, flagmanager
+from casatasks import uvcontsub, concat, flagdata, flagmanager, exportfits
 from casatasks import split as split_ms
 from casatools import synthesisutils
 import astropy.units as u
@@ -17,7 +17,7 @@ from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
                     flags_from_cont_ranges, clumps_to_casa)
 from .clean_tasks import get_tclean_params, tclean_parallel
-from .common_types import SectionProxy
+from .spectrum_tools import extract_spectrum, plot_spectral_selection
 
 def new_array_dict(arrays: Sequence = ('12m', '7m')):
     return {array: () for array in arrays}
@@ -43,6 +43,9 @@ class FieldHandler:
     """Continuum file."""
     spws: List[str] = dcfield(default_factory=list, init=False)
     """List with spw values."""
+    spectra: List[Tuple[u.Quantity]] = dcfield(default_factory=list,
+                                               init=False)
+    """Stored spectra per SPW."""
     default_config: InitVar[Optional[Path]] = None
     """Default configuration file name."""
     datadir: InitVar[Path] = Path('./').resolve()
@@ -235,7 +238,7 @@ class FieldHandler:
                     cont[spw] = [line.split()[0]]
                 else:
                     cont[spw].append(line.split()[0])
-        
+
         # Copy continuum ranges for multi EBs
         final_cont = {}
         for i, spws in enumerate(self.spws):
@@ -249,7 +252,8 @@ class FieldHandler:
                             suffix: str,
                             invert: bool = False,
                             mask_borders: bool = False,
-                            resume: bool = False) -> str:
+                            resume: bool = False) -> Dict[int,
+                                                          List[Tuple[int]]]:
         """Get spectral ranges from continuum file.
         
         The `cont.dat` contains the spectral ranges where the continuum is
@@ -263,7 +267,7 @@ class FieldHandler:
           reume: Optional; Resume where it was left last time?
 
         Returns:
-          A CASA compatible `spw` selection.
+          A dictionary mapping SPW numbers with channel ranges.
         """
         flag_file = self.uvdata.with_suffix(f'{suffix}.json')
         if flag_file.is_file() and resume:
@@ -360,7 +364,8 @@ class FieldHandler:
                       uvtype: str = '',
                       nproc: int = 5,
                       resume: bool = False,
-                      **tclean_args):
+                      get_spectra: bool = False,
+                      **tclean_args) -> List[Path]:
         """Run `tclean` on all spws.
         
         Arguments given under `tclean_args` replace the values from `config`.
@@ -371,9 +376,14 @@ class FieldHandler:
           uvtype: Optional; Type of uvdata to clean.
           nproc: Optional; Number of processors for parallel clean.
           resume: Optional; Resume where it was left?
+          get_spectra: Optional; Extract spectra from cubes per spw?
           tclean_args: Optional; Additional arguments for tclean.
+
+        Returns:
+          A list with the image file names.
         """
         # Iterate over spws
+        imagenames = []
         for i, spw in enumerate(self.spws):
             # Clean args
             suffix = self.get_uvsuffix(uvtype)
@@ -404,16 +414,28 @@ class FieldHandler:
             # Run clean
             self.clean_data(section, imagename, uvtype=uvtype, nproc=nproc,
                             resume=resume, spw=spw, **tclean_args, **impars)
+            imagenames.append(imagename)
+
+            # Extract spectrum
+            if get_spectra:
+                fitsimage = imagename.with_suffix('.image.fits')
+                exportfits(imagename=f'{imagename}', fitsimage=f'{fitsimage}',
+                           overwrite=True)
+                self.spectra.append(extract_spectrum(fitsimage))
             print('-' * 80)
+
+        return imagenames
 
     def contsub(self,
                 section: str = 'contsub',
-                resume: bool = False) -> None:
+                resume: bool = False,
+                plot_selection: bool = False) -> None:
         """Run `uvcontsub` to obtain continuum subtracted visibilities.
         
         Args:
           section: Optional; Configuration section.
           resume: Optional; Continue from where it was left?
+          plot_selection: Optional; Plot selection for `fitspec`?
         """
         val_step = validate_step(resume, self.uvcontsub, log=self.log.warning)
         if not val_step:
@@ -427,13 +449,21 @@ class FieldHandler:
                                            resume=resume)
         fitorder = self.config.getint(section, 'fitorder', fallback=1)
 
+        # Plot?
+        if plot_selection and len(self.spectra) != 0:
+            outdir = self.uvcontsub.parent / 'plots'
+            outdir.mkdir(exist_ok=True)
+            plot_spectral_selection(self.spectra, fitspec, self.uvdata,
+                                    self.spws, outdir, suffix=suffix)
+
         # Run uvcontsub
         uvcontsub(vis=f'{self.uvdata}', outputvis=f'{self.uvcontsub}',
                   fitspec=clumps_to_casa(fitspec), fitorder=fitorder)
 
     def continuum_vis(self,
                       section: str = 'continuum',
-                      resume: bool = False) -> Tuple[Path]:
+                      resume: bool = False,
+                      plot_selection: bool = False) -> Tuple[Path]:
         """Generate continuum visibilities.
 
         It generates 2 visibility sets:
@@ -444,6 +474,7 @@ class FieldHandler:
         Args:
           section: Optional; Configuration section.
           resume: Optional; Continue from where it was left?
+          plot_selection: Optional; Plot selection for flagged channels?
 
         Returns:
           The line-free and averaged MS file names.
@@ -480,6 +511,13 @@ class FieldHandler:
             flag_chans = self.get_spectral_ranges(suffix,
                                                   resume=resume)
             casa_flag_chans = clumps_to_casa(flag_chans)
+
+            # Plot?
+            if plot_selection and len(self.spectra) != 0:
+                outdir = linefree.parent / 'plots'
+                outdir.mkdir(exist_ok=True)
+                plot_spectral_selection(self.spectra, flag_chans, self.uvdata,
+                                        self.spws, outdir, suffix=suffix)
 
             # Split the uvdata
             # WARNING: this needs to be tested
@@ -526,8 +564,8 @@ class FieldManager:
         # When original_data is given, then split the field and fill the object
         if original_uvdata is not None:
             self.log.info('Appending data from original MS')
-            self.append_data(field=field,
-                             original_uvdata=original_uvdata,
+            self.append_data(original_uvdata,
+                             field=field,
                              default_config=default_config,
                              configfile=configfile,
                              cont_file=cont_file,
@@ -554,17 +592,20 @@ class FieldManager:
 
     def append_data(self,
                     original_uvdata: Path,
-                    field: str,
-                    default_config: Path,
-                    configfile: Path,
-                    cont_file: Path,
-                    datadir: Path):
-        """Append data from original calibrated MS.
+                    field: Optional[str] = None,
+                    default_config: Optional[Path] = None,
+                    configfile: Optional[Path] = None,
+                    cont_file: Optional[Path] = None,
+                    datadir: Optional[Path] = None):
+        """Append or update data from original calibrated MS.
         
         Args:
           original_uvdata: Original uv data.
-          field: Field name.
-          default_config:
+          field: Optional; Field name.
+          default_config: Optional; Default configuration file name.
+          configfile: Optional; Configuration file name.
+          cont_file: Optional; Continuum file name.
+          datadir: Optional; Data directory.
         """
         # Store original data for each array and calculate the number of EBs
         array = get_array(original_uvdata)
@@ -656,7 +697,8 @@ class FieldManager:
                     uvtype: str = '',
                     nproc: int = 5,
                     arrays: Optional[Sequence[str]] = None,
-                    outdir: Optional[Path] = None):
+                    outdir: Optional[Path] = None,
+                    get_spectra: bool = False):
         """Calculate dirty cubes per spw.
         
         The argument `uvtype` is used to determine the uv data file name.
@@ -670,6 +712,7 @@ class FieldManager:
           nproc: Optional; Number of parallel processes.
           arrays: Optional; Array configurations to image.
           outdir: Optional; Output directory.
+          get_spectra: Optional; Extract spectra from dirty cubes?
         """
         # Select arrays
         if arrays is None:
@@ -696,8 +739,10 @@ class FieldManager:
 
             # Clean spws
             self.log.info('Computing dirty cubes for array: %s', array)
-            handler.clean_per_spw(section, outdir=outdir, nproc=nproc,
-                                  uvtype=uvtype, resume=self.resume, niter=0)
+            handler.clean_per_spw(section, outdir=outdir,
+                                  nproc=nproc, uvtype=uvtype,
+                                  get_spectra=get_spectra,
+                                  resume=self.resume, niter=0)
             print('=' * 80)
 
     def contsub_visibilities(self,
@@ -711,7 +756,7 @@ class FieldManager:
         """
         for array, handler in self.data_handler.items():
             self.log.info('Computing contsub visibilities for array: %s', array)
-            handler.contsub(resume=self.resume)
+            handler.contsub(resume=self.resume, plot_selection=True)
 
             # Compute dirty
             if dirty_images:
@@ -730,7 +775,7 @@ class FieldManager:
         """
         for array, handler in self.data_handler.items():
             self.log.info('Computing cont visibilities for array: %s', array)
-            handler.continuum_vis(resume=self.resume)
+            handler.continuum_vis(resume=self.resume, plot_selection=True)
 
             # Make a control image
             if control_image:

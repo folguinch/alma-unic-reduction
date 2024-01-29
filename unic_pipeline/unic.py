@@ -34,7 +34,7 @@ def prep_data(args: argparse.Namespace) -> None:
 def dirty_cubes(args: argparse.Namespace):
     """Calculate dirty cubes."""
     for data in args.data.values():
-        data.dirty_cubes(nproc=args.nproc[0])
+        data.dirty_cubes(nproc=args.nproc[0], get_spectra=True)
 
 #def get_continuum(args: argparse.Namespace):
 #    """Obtain or create a line-free channel file."""
