@@ -112,35 +112,34 @@ files = [
 
 [[package]]
 name = "casatasks"
-version = "6.6.0.20"
+version = "6.6.3.22"
 description = "the CASA tasks"
 category = "main"
 optional = false
 python-versions = "*"
 files = [
-    {file = "casatasks-6.6.0.20-py3-none-any.whl", hash = "sha256:9f212e6f71ba54db6a419de3c6c2790be7791929a28ccda8fb53131e8882773c"},
+    {file = "casatasks-6.6.3.22-py3-none-any.whl", hash = "sha256:20beafadafa5f62c720816f8beccc37dd98793789408862007a1a70aca25a6fa"},
 ]
 
 [package.dependencies]
-casatools = "6.6.0.20"
+casatools = "6.6.3.22"
 certifi = "*"
 matplotlib = "*"
 scipy = "*"
 
 [[package]]
 name = "casatools"
-version = "6.6.0.20"
+version = "6.6.3.22"
 description = "Astronomy data reduction library"
 category = "main"
 optional = false
 python-versions = ">=3.6"
 files = [
-    {file = "casatools-6.6.0.20-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:ddae496aeec495f16734b6a489ef3b43c2ba3362f4fa4affb21002670172226f"},
-    {file = "casatools-6.6.0.20-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:af080604dec296e75ab2f3c38e69d16672d5ce334f52d3f59e05db2f6e2af6b6"},
-    {file = "casatools-6.6.0.20-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:f2befc5248387a05a98ef340bfd5c70e4f8407db7da5fc048e04977c966a32d9"},
-    {file = "casatools-6.6.0.20-cp38-cp38-macosx_12_0_x86_64.whl", hash = "sha256:b2f0b0f539e9a408f5dcf2b36ef7760850f0b24794ab845ffd7eb46317266501"},
-    {file = "casatools-6.6.0.20-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f9b1ce1f7d2c48137de2373cabe0590e7f55bec11b0c689ec951969f4ce23799"},
-    {file = "casatools-6.6.0.20-cp38-cp38-manylinux_2_28_x86_64.whl", hash = "sha256:a68367bf51448f313f4e7860554b37c3f1aee44605bad36744093b1b34cd0175"},
+    {file = "casatools-6.6.3.22-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:79e5aae0a3e565f2d91a2feaaac32a8fd91dfffc0c730b838767249bbb4b2bdf"},
+    {file = "casatools-6.6.3.22-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a7078df0731a2be1e609cbd244741b51bf91ae1e03bc7dfa0124d7c6f2e8ad76"},
+    {file = "casatools-6.6.3.22-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:d6cb634cc10920831d41a82cfd2be3c9062953188285b234a2cc209be62b8816"},
+    {file = "casatools-6.6.3.22-cp38-cp38-macosx_12_0_x86_64.whl", hash = "sha256:323239bf676d2920db162dd393dbff3327face02deb708351b5fb52ee9191083"},
+    {file = "casatools-6.6.3.22-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5cdeabee64298c59f4198c16345db7d4e4e2666774ec01e38d507e4dffce8cf1"},
 ]
 
 [package.dependencies]
