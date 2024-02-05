@@ -28,7 +28,7 @@ def extract_spectrum(image: 'pathlib.Path') -> Tuple[u.Quantity]:
 
 def freq_to_chan(freq: npt.ArrayLike, chan: npt.ArrayLike) -> Tuple[Callable]:
     """Generate functions to convert frequencies in channels and viceversa."""
-    slope, interp, rval, *_ = stats.linregress(freq, chan)
+    slope, interp, *_ = stats.linregress(freq, chan)
 
     return lambda x: slope * x + interp, lambda x: (x - interp) / slope
 

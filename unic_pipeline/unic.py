@@ -36,36 +36,25 @@ def dirty_cubes(args: argparse.Namespace):
     for data in args.data.values():
         data.dirty_cubes(nproc=args.nproc[0], get_spectra=True)
 
-#def get_continuum(args: argparse.Namespace):
-#    """Obtain or create a line-free channel file."""
-#    config = args.config['get_cont']
-#
-#    # Read or create file
-#    cont_file = Path(config.get('cont_file', fallback='./cont.txt'))
-#    if not cont_file.is_file():
-#        # Different methods can be inplemented in here, and the a "mode" or
-#        # "method" item can be added to the config file
-#        raise NotImplementedError('Continuum finding not implemented yet')
-#    args.data_handler.cont_file = cont_file
-#
 def continuum(args: argparse.Namespace):
     """Calculate the continuum visibilities."""
     for data in args.data.values():
         data.continuum_visibilities(control_image=True, nproc=args.nproc[0])
 
 def contsub(args: argparse.Namespace):
-    """Calculate the continuum subtracted visibilities.
-
-    At the moment it is assumed that each line of the `cont.txt` contains the
-    continuum channels for the corresponding `spw`. This is EB independent,
-    i.e. lines do need to be repeated in the file.
-    """
+    """Calculate the continuum subtracted visibilities."""
     for data in args.data.values():
         data.contsub_visibilities(dirty_images=True, nproc=args.nproc[0])
-#    config = args.config['contsub']
-#    args.data_handler.contsub(config,
-#                              skip='contsub' in args.skip,
-#                              log=args.log.info)
+
+def combine_arrays(args: argparse.Namespace):
+    """Combine 7m and 12m data."""
+    for data in args.data.values():
+        if '7m' not in data.arrays or '12m' not in data.arrays:
+            args.log.warning('Arrays missing for combiantion: %s', data.arrays)
+            continue
+        data.combine_arrays(('7m', '12m'), default_config=args.defconfig,
+                            datadir=args.basedir[0], control_images=True,
+                            nproc=args.nproc[0])
 
 #def clean_continuum(args: argparse.Namespace):
 #    """Clean continuum data."""
@@ -108,6 +97,7 @@ def unic(args: Optional[List] = None) -> None:
         #'get_cont': get_continuum,
         'continuum': continuum,
         'contsub': contsub,
+        'combine_arrays': combine_arrays,
         #'clean_cont': clean_continuum,
         #'clean_cubes': clean_cubes,
     }
