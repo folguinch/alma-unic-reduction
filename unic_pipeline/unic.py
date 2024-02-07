@@ -34,7 +34,9 @@ def prep_data(args: argparse.Namespace) -> None:
 def dirty_cubes(args: argparse.Namespace):
     """Calculate dirty cubes."""
     for data in args.data.values():
-        data.dirty_cubes(nproc=args.nproc[0], get_spectra=True)
+        data.array_imaging(section='dirty_cubes', uvtype='uvcontsub',
+                           nproc=args.nproc[0], per_spw=True, get_spectra=True,
+                           niter=0)
 
 def continuum(args: argparse.Namespace):
     """Calculate the continuum visibilities."""

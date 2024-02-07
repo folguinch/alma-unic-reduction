@@ -23,8 +23,8 @@ def new_array_dict(arrays: Sequence = ('12m', '7m')):
     return {array: () for array in arrays}
 
 @dataclass
-class FieldHandler:
-    """Keep track of field data."""
+class ArrayHandler:
+    """Keep track of array data."""
     name: Optional[str] = None
     """Name of the field."""
     array: Optional[str] = None
@@ -102,10 +102,10 @@ class FieldHandler:
         return antennae
 
     def _validate_config(self):
-        """Check that data in config and FieldHandler coincide."""
+        """Check that data in config and `ArrayHandler` coincide."""
         # Check if config has been initiated
         if self.config is None:
-            raise ValueError('Cannot create FieldHandler without config')
+            raise ValueError('Cannot create ArrayHandler without config')
 
         # Field name
         if self.field is None:
@@ -341,7 +341,7 @@ class FieldHandler:
     def clean_data(self,
                    section: str,
                    imagename: Path,
-                   uvtype: str = '',
+                   uvtype: str,
                    nproc: int = 5,
                    resume: bool = False,
                    **tclean_args):
@@ -352,7 +352,7 @@ class FieldHandler:
         Args:
           section: Configuration section.
           imagename: Image directory path.
-          uvtype: Optional; Type of uvdata to clean.
+          uvtype: Type of uvdata to clean.
           nproc: Optional; Number of processors for parallel clean.
           resume: Optional; Resume where it was left?
           tclean_args: Optional; Additional arguments for tclean.
@@ -360,6 +360,16 @@ class FieldHandler:
         # tclean args
         config = self.config[section]
         kwargs = get_tclean_params(config, cfgvars=tclean_args)
+        if uvtype == 'continuum':
+            kwargs.setdefault('specmode', 'mfs')
+        elif uvtype == 'uvcontsub':
+            kwargs.setdefault('specmode', 'cube')
+            kwargs.setdefault('outframe', 'LSRK')
+        kwargs.setdefault('deconvolver', 'hogbom')
+        kwargs.setdefault('weighting', 'briggs')
+        kwargs.setdefault('robust', 0.5)
+        kwargs.setdefault('gridder', 'standard')
+        kwargs.setdefault('niter', 100000)
 
         # Check for files
         if imagename.exists() and resume:
@@ -414,22 +424,24 @@ class FieldHandler:
                 os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
             # Parameters
-            cell = self.config.get(section, 'cell', vars=tclean_args,
-                                   fallback=None)
-            imsize = self.config.get(section, 'imsize', vars=tclean_args,
-                                     fallback=None)
-            impars = {}
-            if cell is None or imsize is None:
-                new_cell, new_imsize = self.get_image_scales(spw=i,
-                                                             uvtype=uvtype)
-                if cell is None:
-                    impars['cell'] = new_cell
-                if imsize is None:
-                    impars['imsize'] = f'{new_imsize}'
+            #cell = self.config.get(section, 'cell', vars=tclean_args,
+            #                       fallback=None)
+            #imsize = self.config.get(section, 'imsize', vars=tclean_args,
+            #                         fallback=None)
+            #impars = {}
+            #if cell is None or imsize is None:
+            #    self.log.info('Determining imaging parameter from MS')
+            #    new_cell, new_imsize = self.get_image_scales(spw=i,
+            #                                                 uvtype=uvtype)
+            #    if cell is None:
+            #        impars['cell'] = new_cell
+            #    if imsize is None:
+            #        impars['imsize'] = f'{new_imsize}'
 
             # Run clean
-            self.clean_data(section, imagename, uvtype=uvtype, nproc=nproc,
-                            resume=resume, spw=spw, **tclean_args, **impars)
+            #self.log.debug('Imaging parameters: %s', impars)
+            self.clean_data(section, imagename, uvtype, nproc=nproc,
+                            resume=resume, spw=spw, **tclean_args)#, **impars)
             imagenames.append(imagename)
 
             # Extract spectrum
@@ -439,7 +451,7 @@ class FieldHandler:
                 exportfits(imagename=f'{imagename}', fitsimage=f'{fitsimage}',
                            overwrite=True)
                 self.spectra.append(extract_spectrum(fitsimage))
-            print('-' * 80)
+            self.log.info('-' * 80)
 
         return imagenames
 
@@ -519,7 +531,7 @@ class FieldHandler:
             self.config[section]['width'] = ','.join(map(str, width))
             self.write_config()
         self.log.info('Continuum bins: %s', width)
-        datacolumn = self.config[section]['datacolumn']
+        datacolumn = self.config.get(section, 'datacolumn', fallback='data')
 
         if val_all:
             # Average channels without flagging
@@ -569,7 +581,7 @@ class FieldManager:
     """Original data for each array."""
     split: Dict[str, Tuple[Path]] = dcfield(default_factory=new_array_dict)
     """Split data for each array."""
-    data_handler: Dict[str, FieldHandler] = dcfield(default_factory=dict)
+    data_handler: Dict[str, ArrayHandler] = dcfield(default_factory=dict)
     """Data handler."""
     field: InitVar[Optional[str]] = None
     """Field name."""
@@ -613,13 +625,13 @@ class FieldManager:
     def _init_data_handler(self,
                            field: str,
                            array: str,
-                           **kwargs) -> FieldHandler:
+                           **kwargs) -> ArrayHandler:
         # Shortcut
-        self.data_handler[array] = FieldHandler(field,
+        self.data_handler[array] = ArrayHandler(field,
                                                 array,
                                                 self.log,
                                                 **kwargs)
-        
+
         return self.data_handler[array]
 
     def append_data(self,
@@ -646,7 +658,7 @@ class FieldManager:
         self.log.debug('Original data: %s', self.original)
         neb = len(self.original[array])
 
-        # Update or create new FieldHandler
+        # Update or create new ArrayHandler
         if (handler:= self.data_handler.get(array)) is None:
             self.log.debug('Generating new data handler')
             handler = self._init_data_handler(field,
@@ -707,7 +719,7 @@ class FieldManager:
         # Split parameters
         if ((spw := self.data_handler[array].config.get(
             'split', 'spw', fallback=None)) is None):
-            spw = find_spws(self.name, uvdata)
+            spw = find_spws(uvdata)
             self.data_handler[array].update_config(split={'spw': spw})
         datacolumn = self.data_handler[array].config['split']['datacolumn']
 
@@ -746,27 +758,79 @@ class FieldManager:
             # Update handler spws
             handler.update_spws()
 
-    def dirty_cubes(self,
-                    section: str = 'dirty_cubes',
-                    uvtype: str = '',
-                    nproc: int = 5,
-                    arrays: Optional[Sequence[str]] = None,
-                    outdir: Optional[Path] = None,
-                    get_spectra: bool = False):
-        """Calculate dirty cubes per spw.
-        
-        The argument `uvtype` is used to determine the uv data file name.
-        Available values are `['', 'continuum', 'uvcontsub']` to compute dirty
-        images from the calibrated data, continuum data, or continuum
-        subtracted data, respectively.
+    #def dirty_cubes(self,
+    #                section: str = 'dirty_cubes',
+    #                uvtype: str = '',
+    #                nproc: int = 5,
+    #                arrays: Optional[Sequence[str]] = None,
+    #                outdir: Optional[Path] = None,
+    #                get_spectra: bool = False):
+    #    """Calculate dirty cubes per spw.
+    #    
+    #    The argument `uvtype` is used to determine the uv data file name.
+    #    Available values are `['', 'continuum', 'uvcontsub']` to compute dirty
+    #    images from the calibrated data, continuum data, or continuum
+    #    subtracted data, respectively.
+
+    #    Args:
+    #      section: Optional; Configuration section.
+    #      uvtype: Optional; Type of uvdata to image.
+    #      nproc: Optional; Number of parallel processes.
+    #      arrays: Optional; Array configurations to image.
+    #      outdir: Optional; Output directory.
+    #      get_spectra: Optional; Extract spectra from dirty cubes?
+    #    """
+        # Select arrays
+        #if arrays is None:
+        #    arrays = self.data_handler.keys()
+
+        ## Iterate over selected arrays
+        #for array in arrays:
+        #    # Check input
+        #    handler = self.data_handler[array]
+        #    if outdir is None:
+        #        outdir = handler.uvdata.parent / section
+        #    outdir.mkdir(exist_ok=True)
+
+        #    # Global imaging sizes
+        #    cell = handler.config.get('imaging', 'cell', fallback=None)
+        #    imsize = handler.config.get('imaging', 'imsize', fallback=None)
+        #    if cell is None or imsize is None:
+        #        new_cell, new_imsize = handler.get_image_scales(uvtype=uvtype)
+        #        if cell is None:
+        #            handler.config[section]['cell'] = new_cell
+        #        if imsize is None:
+        #            handler.config[section]['imsize'] = f'{new_imsize}'
+        #        handler.write_config()
+
+        #    # Clean spws
+        #    self.log.info('Computing dirty cubes for array: %s', array)
+        #    handler.clean_per_spw(section, outdir=outdir,
+        #                          nproc=nproc, uvtype=uvtype,
+        #                          get_spectra=get_spectra,
+        #                          resume=self.resume, niter=0)
+        #    print('=' * 80)
+
+    def array_imaging(self,
+                      arrays: Optional[Sequence[str]] = None,
+                      outdir: Optional[Path] = None,
+                      section: str = 'continuum',
+                      uvtype: str = 'continuum',
+                      nproc: int = 5,
+                      per_spw: bool = False,
+                      get_spectra: bool = False,
+                      **tclean_args):
+        """Image an array.
 
         Args:
-          section: Optional; Configuration section.
-          uvtype: Optional; Type of uvdata to image.
-          nproc: Optional; Number of parallel processes.
-          arrays: Optional; Array configurations to image.
-          outdir: Optional; Output directory.
-          get_spectra: Optional; Extract spectra from dirty cubes?
+          arrays: Optional; Array to image.
+          outdirs: Optional; Output directory.
+          section: Optional; Configuration section with `tclean` parameters.
+          uvtype: Optional; Type of uv data to clean.
+          nproc: Optional; Number of parallel processes for cleaning.
+          per_spw: Optional; Clean each SPW individually?
+          get_spectra: Optional; Extract spectra from cubes per SPW?
+          tclean_args: Optional; Additional `casatasks.tclean` arguments.
         """
         # Select arrays
         if arrays is None:
@@ -774,68 +838,37 @@ class FieldManager:
 
         # Iterate over selected arrays
         for array in arrays:
-            # Check input
+            # Environment variables
             handler = self.data_handler[array]
             if outdir is None:
                 outdir = handler.uvdata.parent / section
             outdir.mkdir(exist_ok=True)
 
-            # Global imaging sizes
-            cell = handler.config.get(section, 'cell', fallback=None)
-            imsize = handler.config.get(section, 'imsize', fallback=None)
-            if cell is None or imsize is None:
-                new_cell, new_imsize = handler.get_image_scales(uvtype=uvtype)
-                if cell is None:
-                    handler.config[section]['cell'] = new_cell
-                if imsize is None:
-                    handler.config[section]['imsize'] = f'{new_imsize}'
+            # Fill tclean parameters
+            tclean_args['cell'] = handler.config.get('imaging', 'cell',
+                                                     fallback=None)
+            tclean_args['imsize'] = handler.config.get('imaging', 'imsize',
+                                                       fallback=None)
+            if tclean_args['cell'] is None or tclean_args['imsize'] is None:
+                impars = handler.get_image_scales(uvtype=uvtype)
+                if tclean_args['cell'] is None:
+                    tclean_args['cell'] = impars[0]
+                if tclean_args['imsize'] is None:
+                    tclean_args['imsize'] = f'{impars[1]}'
                 handler.write_config()
 
-            # Clean spws
-            self.log.info('Computing dirty cubes for array: %s', array)
-            handler.clean_per_spw(section, outdir=outdir,
-                                  nproc=nproc, uvtype=uvtype,
-                                  get_spectra=get_spectra,
-                                  resume=self.resume, niter=0)
-            print('=' * 80)
-
-    def array_imaging(self,
-                      array: str,
-                      outdir: Optional[Path] = None,
-                      section: str = 'continuum',
-                      uvtype: str = 'continuum',
-                      nproc: int = 5):
-        """Image an array.
-
-        Args:
-          array: Array to image.
-          outdir: Output directory.
-          section: Optional; Configuration section with `tclean` parameters.
-          uvtype: Optional; Type of uv data to clean.
-          nproc: Optional; Number of parallel processes for cleaning.
-        """
-        # Fill tclean parameters
-        handler = self.data_handler[array]
-        tclean_args = {}
-        tclean_args['cell'] = handler.config.get(section, 'cell',
-                                                 fallback=None)
-        tclean_args['imsize'] = handler.config.get(section, 'imsize',
-                                                   fallback=None)
-        if tclean_args['cell'] is None or tclean_args['imsize'] is None:
-            impars = handler.get_image_scales(uvtype=uvtype)
-            if tclean_args['cell'] is None:
-                tclean_args['cell'] = impars[0]
-            if tclean_args['imsize'] is None:
-                tclean_args['imsize'] = f'{impars[1]}'
-
-        # Environment variables
-        outdir.mkdir(exist_ok=True)
-        suffix = handler.get_uvsuffix(uvtype)
-        imagename = outdir / f'{handler.name}_{array}{suffix}.image'
-
-        # Run clean
-        handler.clean_data(section, imagename, uvtype=uvtype, nproc=nproc,
-                           resume=self.resume, **tclean_args)
+            # Clean cases
+            if per_spw:
+                handler.clean_per_spw(section, outdir=outdir,
+                                      nproc=nproc, uvtype=uvtype,
+                                      get_spectra=get_spectra,
+                                      resume=self.resume, **tclean_args)
+            else:
+                suffix = handler.get_uvsuffix(uvtype)
+                imagename = outdir / f'{handler.name}_{array}{suffix}.image'
+                handler.clean_data(section, imagename, uvtype, nproc=nproc,
+                                   resume=self.resume, **tclean_args)
+            self.log.info('=' * 80)
 
     def contsub_visibilities(self,
                              dirty_images: bool = False,
@@ -854,8 +887,9 @@ class FieldManager:
 
         # Compute dirty
         if dirty_images:
-            self.dirty_cubes(uvtype='uvcontsub', nproc=nproc,
-                             get_spectra=get_spectra)
+            self.array_imaging(uvtype='uvcontsub', nproc=nproc,
+                               section='dirty_cubes', per_spw=True,
+                               get_spectra=get_spectra, niter=0)
 
     def continuum_visibilities(self,
                                control_image: bool = False,
@@ -872,11 +906,10 @@ class FieldManager:
             self.log.info('Computing cont visibilities for array: %s', array)
             handler.continuum_vis(resume=self.resume, plot_selection=True)
 
-            # Make a control image
-            if control_image:
-                if outdir is None:
-                    outdir = handler.uvdata.parent / 'continuum_control'
-                self.array_imaging(array, outdir, nproc=nproc)
+        # Make a control image
+        if control_image:
+            self.array_imaging(outdir=outdir, section='continuum_control',
+                               nproc=nproc)
 
     def combine_arrays(self,
                        arrays: Sequence[str],
@@ -915,11 +948,12 @@ class FieldManager:
             # Control images
             if control_images:
                 if uvtype == 'uvcontsub':
-                    self.dirty_cubes(uvtype=uvtype, arrays=[new_array],
-                                     nproc=nproc)
+                    self.array_imaging(arrays=[new_array], uvtype=uvtype,
+                                       section='dirty_cubes', per_spw=True,
+                                       nproc=nproc, niter=0)
                 elif uvtype == 'continuum':
-                    outdir = handler.uvdata.parent / 'continuum_control'
-                    self.array_imaging(new_array, outdir, nproc=nproc)
+                    self.array_imaging(arrays=[new_array],
+                                       section='continuum_control', nproc=nproc)
 
     def write_configs(self):
         """Write configs to disk."""
@@ -1030,7 +1064,7 @@ class DataManager(Dict):
                 cont_file = cont[i]
             else:
                 cont_file = None
-            handler = FieldHandler(configfile=cfg, datadir=datadir,
+            handler = ArrayHandler(configfile=cfg, datadir=datadir,
                                    cont_file=cont_file, log=log)
 
             # Update field
