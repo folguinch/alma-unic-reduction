@@ -3,7 +3,6 @@ from typing import List, Optional, Sequence, Callable, Dict, Union, Tuple
 from inspect import signature
 import os
 
-from casatasks import vishead
 from casatools import msmetadata, ms
 import astropy.units as u
 import numpy as np
@@ -241,7 +240,7 @@ def clumps_to_casa(clumps_per_spw: Dict[int, List[Tuple[int]]]) -> str:
 
     return ','.join(ranges)
 
-def find_spws(field: str, uvdata: 'pathlib.Path',
+def find_spws(uvdata: 'pathlib.Path',
               intent: str = 'OBSERVE_TARGET#ON_SOURCE') -> str:
     """Filter science spws for source."""
     metadata = get_metadata(uvdata)
@@ -287,7 +286,7 @@ def get_spws_indices(uvdata: 'pathlib.Path',
     # Extract spws
     spws = sorted(bb_info.values(), key=lambda x: x[0])
     metadata.close()
-    
+
     if selected is not None:
         return [','.join(map(str, spw))
                 for i, spw in enumerate(spws)
