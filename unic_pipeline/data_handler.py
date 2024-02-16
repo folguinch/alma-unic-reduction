@@ -16,7 +16,8 @@ from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     find_spws, extrema_ms, gaussian_beam,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
                     flags_from_cont_ranges, clumps_to_casa)
-from .clean_tasks import get_tclean_params, tclean_parallel
+from .clean_tasks import (get_tclean_params, tclean_parallel,
+                          recommended_auto_masking)
 from .spectrum_tools import extract_spectrum, plot_spectral_selection
 
 def new_array_dict(arrays: Sequence = ('12m', '7m')):
@@ -301,7 +302,8 @@ class ArrayHandler:
                          spw: Optional[int] = None,
                          beam_oversample: int = 5,
                          sigfig: int = 2,
-                         pbcoverage: float = 2.) -> Tuple[str, int]:
+                         pbcoverage: float = 2.,
+                         section: str = 'imaging') -> Tuple[str, int]:
         """Get cell and image sizes.
         
         Args:
@@ -314,6 +316,12 @@ class ArrayHandler:
         Returns:
           CASA compatible cell size and image size.
         """
+        # Search in config
+        cell = self.config.get(section, 'cell', fallback=None)
+        imsize = self.config.getint(section, 'imsize', fallback=None)
+        if cell is not None and imsize is not None:
+            return cell, imsize
+
         # Get parameters from MS
         uvdata = self.get_uvname(uvtype)
         low_freq, high_freq, longest_baseline = extrema_ms(uvdata, spw=spw)
@@ -329,14 +337,21 @@ class ArrayHandler:
 
         # Estimate cell size
         su = synthesisutils()
-        cell = round_sigfig(beam / beam_oversample, sigfig=sigfig)
-        self.log.info('Estimated cell size: %s', cell)
-        imsize = int(pbsize * pbcoverage / cell)
-        self.log.info('Estimated image size: %s', imsize)
-        imsize = su.getOptimumSize(imsize)
-        self.log.info('Optimal image size: %s', imsize)
+        if cell is None:
+            cell = round_sigfig(beam / beam_oversample, sigfig=sigfig)
+            self.log.info('Estimated cell size: %s', cell)
+            cell = f'{cell.value}{cell.unit}'
+            self.config[section]['cell'] = cell
+            self.write_config()
+        if imsize is None:
+            imsize = int(pbsize * pbcoverage / cell)
+            self.log.info('Estimated image size: %s', imsize)
+            imsize = su.getOptimumSize(imsize)
+            self.log.info('Optimal image size: %s', imsize)
+            self.config[section]['imsize'] = imsize
+            self.write_config()
 
-        return f'{cell.value}{cell.unit}', imsize
+        return cell, imsize
 
     def clean_data(self,
                    section: str,
@@ -370,6 +385,10 @@ class ArrayHandler:
         kwargs.setdefault('robust', 0.5)
         kwargs.setdefault('gridder', 'standard')
         kwargs.setdefault('niter', 100000)
+
+        # Masking
+        if kwargs.get('usemask', '') == 'auto-multithresh':
+            kwargs = recommended_auto_masking(self.array) | kwargs
 
         # Check for files
         if imagename.exists() and resume:
@@ -840,22 +859,29 @@ class FieldManager:
         for array in arrays:
             # Environment variables
             handler = self.data_handler[array]
+            # Skip 7m12m for uvtype=''
+            if array == '7m12m' and not handler.get_uvname(uvtype).exists():
+                self.log.info('Skipping imaging for %s', array)
+                continue
             if outdir is None:
                 outdir = handler.uvdata.parent / section
             outdir.mkdir(exist_ok=True)
 
             # Fill tclean parameters
-            tclean_args['cell'] = handler.config.get('imaging', 'cell',
-                                                     fallback=None)
-            tclean_args['imsize'] = handler.config.get('imaging', 'imsize',
-                                                       fallback=None)
-            if tclean_args['cell'] is None or tclean_args['imsize'] is None:
-                impars = handler.get_image_scales(uvtype=uvtype)
-                if tclean_args['cell'] is None:
-                    tclean_args['cell'] = impars[0]
-                if tclean_args['imsize'] is None:
-                    tclean_args['imsize'] = f'{impars[1]}'
-                handler.write_config()
+            impars = handler.get_image_scales(uvtype=uvtype)
+            tclean_args['cell'] = impars[0]
+            tclean_args['imsize'] = impars[1]
+            #tclean_args['cell'] = handler.config.get('imaging', 'cell',
+            #                                         fallback=None)
+            #tclean_args['imsize'] = handler.config.get('imaging', 'imsize',
+            #                                           fallback=None)
+            #if tclean_args['cell'] is None or tclean_args['imsize'] is None:
+            #    impars = handler.get_image_scales(uvtype=uvtype)
+            #    if tclean_args['cell'] is None:
+            #        tclean_args['cell'] = impars[0]
+            #    if tclean_args['imsize'] is None:
+            #        tclean_args['imsize'] = f'{impars[1]}'
+            #    handler.write_config()
 
             # Clean cases
             if per_spw:
@@ -865,7 +891,10 @@ class FieldManager:
                                       resume=self.resume, **tclean_args)
             else:
                 suffix = handler.get_uvsuffix(uvtype)
-                imagename = outdir / f'{handler.name}_{array}{suffix}.image'
+                robust = handler.config.get(section, 'robust',
+                                            vars=tclean_args, fallback=0.5)
+                imagename = f'{handler.name}_{array}_robust{robust}'
+                imagename = outdir / f'{imagename}{suffix}.image'
                 handler.clean_data(section, imagename, uvtype, nproc=nproc,
                                    resume=self.resume, **tclean_args)
             self.log.info('=' * 80)
@@ -934,8 +963,6 @@ class FieldManager:
             self.log.info('Concatenating MSs for uvtype: %s', uvtype)
             to_concat = list(map(str, self.get_uvnames(arrays, uvtype=uvtype)))
             concatvis = handler.get_uvname(uvtype)
-            if uvtype == 'uvcontsub':
-                handler.update_spws(uvtype=uvtype)
 
             # Concatenate
             if concatvis.exists() and not self.resume:
@@ -944,6 +971,8 @@ class FieldManager:
             if not concatvis.exists():
                 self.log.debug('Concatenating MSs: %s', to_concat)
                 concat(vis=to_concat, concatvis=f'{concatvis}')
+            if uvtype == 'uvcontsub':
+                handler.update_spws(uvtype=uvtype)
 
             # Control images
             if control_images:
