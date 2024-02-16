@@ -11,17 +11,39 @@ from casatasks import tclean
 from .common_types import SectionProxy
 from .utils import get_func_params
 
+def recommended_auto_masking(array: str) -> Dict:
+    """Recommended auto-masking values per array.
+
+    From the table in [CASA
+    guide](https://casaguides.nrao.edu/index.php/Automasking_Guide).
+    """
+    params = {'sidelobethreshold': 2.0,
+              'noisethreshold': 4.25,
+              'minbeamfrac': 0.3,
+              'lownoisethreshold': 1.5,
+              'negativethreshold': 0.0}
+    if array == '7m':
+        params['sidelobethreshold'] = 1.25
+        params['noisethreshold'] = 5.0
+        params['minbeamfrac'] = 0.1
+        params['lownoisethreshold'] = 2.0
+
+    return params
+
 def get_tclean_params(
     config: SectionProxy,
     required_keys: Sequence[str] = ('cell', 'imsize'),
     ignore_keys: Sequence[str] = ('vis', 'imagename'),
-    float_keys: Sequence[str]  = ('robust', 'pblimit', 'pbmask'),
-    int_keys: Sequence[str] = ('niter', 'chanchunks'),
+    float_keys: Sequence[str]  = ('robust', 'pblimit', 'pbmask',
+                                  'sidelobethreshold', 'noisethreshold',
+                                  'minbeamfrac', 'lownoisethreshold',
+                                  'negativethreshold'),
+    int_keys: Sequence[str] = ('niter', 'chanchunks', 'nterms'),
     bool_keys: Sequence[str] = ('interactive', 'parallel', 'pbcor',
                                 'perchanweightdensity'),
     int_list_keys: Sequence[str] = ('imsize', 'scales'),
     cfgvars: Optional[Dict] = None,
-) -> dict:
+) -> Dict:
     """Filter input parameters and convert values to the correct type.
 
     Args:
