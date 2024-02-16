@@ -1,4 +1,30 @@
-"""ALMA-UNIC pipeline."""
+"""ALMA-UNIC pipeline.
+
+The pipeline is designed to process data for the ALMA-UNIC LP. It performs
+several steps:
+
+  - `split`: It prepares the data starting from the original calibrated data or
+    from configuration files. It takes the original data, finds sources for
+    science and splits these data into individual MS per array (7m, 12m). It
+    concatenates data with multiple EBs. If started from `uvdata`, then it
+    generates a configuration file per array collecting information per step
+    using the default configuration for ALMA-UNIC as a skeleton.
+  - `dirty_cubes`: Calculate dirty cubes from the split data.
+  - `continuum`: It takes a `cont.dat` (or similar) file and extracts the
+    frequency ranges for continuum calculation. It then converts it to channel
+    ranges of flagged channels (channel with lines). Additionally, it
+    determines an optimum channel binning for averaging, which are then used to
+    compute the continuum visibilities. Two sets of visibilities are produced,
+    a line-free set (files ending in `.cont.ms`) and set without line flagging
+    (files ending in `.cont_all.ms`).
+  - `contsub`: It uses the frequency ranges for continuum calculation to
+    compute continuum subtracted visibilities.
+  - `combine_arrays`: If 7m and 12m data are given, then a concatenated array
+    is produced for the line-free continuum and continuum subtracted
+    visibilities. It also generates a configuration file for the combined
+    array.
+  - `clean_cont`: Clean continuum to produce science-ready images.
+"""
 from typing import Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -34,12 +60,12 @@ def prep_data(args: argparse.Namespace) -> None:
 def dirty_cubes(args: argparse.Namespace):
     """Calculate dirty cubes."""
     for data in args.data.values():
-        data.array_imaging(section='dirty_cubes', uvtype='uvcontsub',
+        data.array_imaging(section='dirty_cubes', uvtype='',
                            nproc=args.nproc[0], per_spw=True, get_spectra=True,
                            niter=0)
 
 def continuum(args: argparse.Namespace):
-    """Calculate the continuum visibilities."""
+    """Calculate and image the continuum visibilities."""
     for data in args.data.values():
         data.continuum_visibilities(control_image=True, nproc=args.nproc[0])
 
@@ -58,37 +84,12 @@ def combine_arrays(args: argparse.Namespace):
                             datadir=args.basedir[0], control_images=True,
                             nproc=args.nproc[0])
 
-#def clean_continuum(args: argparse.Namespace):
-#    """Clean continuum data."""
-#    config = args.config['clean_cont']
-#    outdir = Path(config['directory'])
-#    outdir.mkdir(parents=True, exist_ok=True)
-#
-#    # Clean data
-#    for suffix in ['cont_all', 'cont']:
-#        imagename = outdir / f'{args.data_handler.name}_{suffix}.image'
-#        uvdata = args.data_handler.uvdata.with_suffix(f'.ms.{suffix}')
-#        args.data_handler.clean_data(config,
-#                                     imagename,
-#                                     uvdata=uvdata,
-#                                     nproc=args.nproc[0],
-#                                     skip='clean_cont' in args.skip,
-#                                     log=args.log.info)
-#
-#def clean_cubes(args: argparse.Namespace):
-#    """Clean cube data."""
-#    config = args.config['clean_cubes']
-#    outdir = Path(config['directory'])
-#    outdir.mkdir(parents=True, exist_ok=True)
-#
-#    # Clean data
-#    uvdata = args.data_handler.uvdata.with_suffix('.ms.contsub')
-#    args.data_handler.clean_per_spw(config,
-#                                    outdir,
-#                                    uvdata=uvdata,
-#                                    nproc=args.nproc[0],
-#                                    skip='clean_cubes' in args.skip,
-#                                    log=args.log.info)
+def clean_continuum(args: argparse.Namespace):
+    """Clean continuum for different robust and arrays."""
+    robust_values = [-2.0, 0.5, 2.0]
+    for data in args.data.values():
+        for robust in robust_values:
+            data.array_imaging(nproc=args.nproc[0], robust=robust)
 
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
@@ -100,7 +101,7 @@ def unic(args: Optional[List] = None) -> None:
         'continuum': continuum,
         'contsub': contsub,
         'combine_arrays': combine_arrays,
-        #'clean_cont': clean_continuum,
+        'clean_cont': clean_continuum,
         #'clean_cubes': clean_cubes,
     }
 
@@ -157,6 +158,8 @@ def unic(args: Optional[List] = None) -> None:
     for step_name, step in steps.items():
         if step_name in args.skip:
             args.log.warning('Skipping step: %s', step_name)
+            if step_name not in ['split']:
+                continue
         else:
             args.log.info('Running step: %s', step_name)
         # Each step has to be run either way to store data directories and
