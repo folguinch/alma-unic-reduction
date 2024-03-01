@@ -17,7 +17,7 @@ from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
                     flags_from_cont_ranges, clumps_to_casa)
 from .clean_tasks import (get_tclean_params, tclean_parallel,
-                          recommended_auto_masking)
+                          recommended_auto_masking, auto_thresh)
 from .spectrum_tools import extract_spectrum, plot_spectral_selection
 
 def new_array_dict(arrays: Sequence = ('12m', '7m')):
@@ -341,14 +341,14 @@ class ArrayHandler:
             cell = round_sigfig(beam / beam_oversample, sigfig=sigfig)
             self.log.info('Estimated cell size: %s', cell)
             cell = f'{cell.value}{cell.unit}'
-            self.config[section]['cell'] = cell
+            self.config.read_dict({section: {'cell': cell}})
             self.write_config()
         if imsize is None:
             imsize = int(pbsize * pbcoverage / cell)
             self.log.info('Estimated image size: %s', imsize)
             imsize = su.getOptimumSize(imsize)
             self.log.info('Optimal image size: %s', imsize)
-            self.config[section]['imsize'] = imsize
+            self.config[section]['imsize'] = f'{imsize}'
             self.write_config()
 
         return cell, imsize
@@ -358,6 +358,7 @@ class ArrayHandler:
                    imagename: Path,
                    uvtype: str,
                    nproc: int = 5,
+                   auto_threshold: bool = False,
                    resume: bool = False,
                    **tclean_args):
         """Run tclean on input or stored uvdata.
@@ -369,6 +370,8 @@ class ArrayHandler:
           imagename: Image directory path.
           uvtype: Type of uvdata to clean.
           nproc: Optional; Number of processors for parallel clean.
+          auto_threshold: Optional; Calculate threshold from noise in initial
+            dirty image?
           resume: Optional; Resume where it was left?
           tclean_args: Optional; Additional arguments for tclean.
         """
@@ -377,7 +380,7 @@ class ArrayHandler:
         kwargs = get_tclean_params(config, cfgvars=tclean_args)
         if uvtype == 'continuum':
             kwargs.setdefault('specmode', 'mfs')
-        elif uvtype == 'uvcontsub':
+        elif uvtype in ['', 'uvcontsub']:
             kwargs.setdefault('specmode', 'cube')
             kwargs.setdefault('outframe', 'LSRK')
         kwargs.setdefault('deconvolver', 'hogbom')
@@ -399,6 +402,12 @@ class ArrayHandler:
 
         # Run tclean
         uvdata = self.get_uvname(uvtype)
+        if auto_threshold:
+            kwargs['threshold'] = auto_thresh(uvdata, imagename, nproc,
+                                              kwargs, log=self.log)
+            kwargs['calcpsf'] = False
+            kwargs['calcres'] = False
+            self.log.info('Automatic threshold: %s', kwargs['threshold'])
         tclean_parallel(uvdata, imagename.with_name(imagename.stem),
                         nproc, kwargs, log=self.log)
 
@@ -435,9 +444,10 @@ class ArrayHandler:
                                   f'{suffix}.image')
 
             # Check for files
+            trigger = True
             if imagename.exists() and resume:
                 self.log.info('Skipping cube for spw %i', i)
-                continue
+                trigger = False
             elif imagename.exists() and not resume:
                 self.log.warning('Deleting cubes for spw %i', i)
                 os.system(f"rm -rf {imagename.with_suffix('.*')}")
@@ -459,16 +469,18 @@ class ArrayHandler:
 
             # Run clean
             #self.log.debug('Imaging parameters: %s', impars)
-            self.clean_data(section, imagename, uvtype, nproc=nproc,
-                            resume=resume, spw=spw, **tclean_args)#, **impars)
+            if trigger:
+                self.clean_data(section, imagename, uvtype, nproc=nproc,
+                                resume=resume, spw=spw, **tclean_args)#, **impars)
             imagenames.append(imagename)
 
             # Extract spectrum
             if get_spectra:
                 self.log.info('Extracting spectra')
                 fitsimage = imagename.with_suffix('.image.fits')
-                exportfits(imagename=f'{imagename}', fitsimage=f'{fitsimage}',
-                           overwrite=True)
+                if not fitsimage.exists():
+                    exportfits(imagename=f'{imagename}',
+                               fitsimage=f'{fitsimage}')
                 self.spectra.append(extract_spectrum(fitsimage))
             self.log.info('-' * 80)
 
@@ -499,7 +511,7 @@ class ArrayHandler:
 
         # Plot?
         if plot_selection and len(self.spectra) != 0:
-            self.log.info('Plotting spectra')
+            self.log.info('Plotting spectra for contsub')
             outdir = self.uvcontsub.parent / 'plots'
             outdir.mkdir(exist_ok=True)
             plot_spectral_selection(self.spectra, fitspec, self.uvdata,
@@ -567,7 +579,7 @@ class ArrayHandler:
 
             # Plot?
             if plot_selection and len(self.spectra) != 0:
-                self.log.info('Plotting spectra')
+                self.log.info('Plotting spectra for line flags')
                 outdir = linefree.parent / 'plots'
                 outdir.mkdir(exist_ok=True)
                 plot_spectral_selection(self.spectra, flag_chans, self.uvdata,
@@ -836,6 +848,7 @@ class FieldManager:
                       section: str = 'continuum',
                       uvtype: str = 'continuum',
                       nproc: int = 5,
+                      auto_threshold: bool = False,
                       per_spw: bool = False,
                       get_spectra: bool = False,
                       **tclean_args):
@@ -847,6 +860,8 @@ class FieldManager:
           section: Optional; Configuration section with `tclean` parameters.
           uvtype: Optional; Type of uv data to clean.
           nproc: Optional; Number of parallel processes for cleaning.
+          auto_threshold: Optional; Calculate threshold from noise in initial
+            dirty image?
           per_spw: Optional; Clean each SPW individually?
           get_spectra: Optional; Extract spectra from cubes per SPW?
           tclean_args: Optional; Additional `casatasks.tclean` arguments.
@@ -896,6 +911,7 @@ class FieldManager:
                 imagename = f'{handler.name}_{array}_robust{robust}'
                 imagename = outdir / f'{imagename}{suffix}.image'
                 handler.clean_data(section, imagename, uvtype, nproc=nproc,
+                                   auto_threshold=auto_threshold,
                                    resume=self.resume, **tclean_args)
             self.log.info('=' * 80)
 
@@ -938,7 +954,7 @@ class FieldManager:
         # Make a control image
         if control_image:
             self.array_imaging(outdir=outdir, section='continuum_control',
-                               nproc=nproc)
+                               nproc=nproc, auto_threshold=True)
 
     def combine_arrays(self,
                        arrays: Sequence[str],
@@ -982,7 +998,9 @@ class FieldManager:
                                        nproc=nproc, niter=0)
                 elif uvtype == 'continuum':
                     self.array_imaging(arrays=[new_array],
-                                       section='continuum_control', nproc=nproc)
+                                       section='continuum_control',
+                                       auto_threshold=True,
+                                       nproc=nproc)
 
     def write_configs(self):
         """Write configs to disk."""
