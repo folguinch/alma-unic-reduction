@@ -1,4 +1,4 @@
-"""Handler for the data."""
+"""Handlers for managing and processing data."""
 from typing import Optional, List, Dict, Tuple, Sequence
 from configparser import ConfigParser, ExtendedInterpolation
 from dataclasses import dataclass, InitVar
@@ -7,7 +7,7 @@ from pathlib import Path
 import json
 import os
 
-from casatasks import uvcontsub, concat, flagdata, flagmanager
+from casatasks import uvcontsub, concat, flagdata, flagmanager, exportfits
 from casatasks import split as split_ms
 from casatools import synthesisutils
 import astropy.units as u
@@ -15,16 +15,17 @@ import astropy.units as u
 from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     find_spws, extrema_ms, gaussian_beam,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
-                    flags_freqs_to_channels)
-from .clean_tasks import get_tclean_params, tclean_parallel
-from .common_types import SectionProxy
+                    flags_from_cont_ranges, clumps_to_casa)
+from .clean_tasks import (get_tclean_params, tclean_parallel,
+                          recommended_auto_masking, auto_thresh)
+from .spectrum_tools import extract_spectrum, plot_spectral_selection
 
 def new_array_dict(arrays: Sequence = ('12m', '7m')):
     return {array: () for array in arrays}
 
 @dataclass
-class FieldHandler:
-    """Keep track of field data."""
+class ArrayHandler:
+    """Keep track of array data."""
     name: Optional[str] = None
     """Name of the field."""
     array: Optional[str] = None
@@ -37,16 +38,19 @@ class FieldHandler:
     """Measurement set directory."""
     configfile: Optional[Path] = None
     """Configuration file name."""
-    default_config: InitVar[Optional[Path]] = None
-    """Default configuration file name."""
-    datadir: InitVar[Path] = Path('./').resolve()
-    """Data directory."""
     neb: Optional[int] = None
     """Number of execution blocks in the uvdata."""
     cont_file: Optional['pathlib.Path'] = None
     """Continuum file."""
     spws: List[str] = dcfield(default_factory=list, init=False)
     """List with spw values."""
+    spectra: List[Tuple[u.Quantity]] = dcfield(default_factory=list,
+                                               init=False)
+    """Stored spectra per SPW."""
+    default_config: InitVar[Optional[Path]] = None
+    """Default configuration file name."""
+    datadir: InitVar[Path] = Path('./').resolve()
+    """Data directory."""
 
     def __post_init__(self, default_config, datadir):
         # Check log
@@ -88,11 +92,21 @@ class FieldHandler:
     def uvcontsub(self):
         return self.uvdata.with_suffix('.contsub.ms')
 
+    def get_antenna_diams(self, array: str) -> List[u.Quantity]:
+        """Return the antenna diameters based on array name."""
+        if array.count('m') > 1:
+            arrays = array.split('m')[:-1]
+            antennae = list(map(lambda x: float(x) * u.m, arrays))
+        else:
+            antennae = [u.Quantity(array)]
+
+        return antennae
+
     def _validate_config(self):
-        """Check that data in config and FieldHandler coincide."""
+        """Check that data in config and `ArrayHandler` coincide."""
         # Check if config has been initiated
         if self.config is None:
-            raise ValueError('Cannot create FieldHandler without config')
+            raise ValueError('Cannot create ArrayHandler without config')
 
         # Field name
         if self.field is None:
@@ -142,14 +156,18 @@ class FieldHandler:
             self.cont_file = Path(cont_file)
             self.log.debug('Setting cont file: %s', self.cont_file)
 
-    def update_spws(self):
+    def update_spws(self, uvtype: str = ''):
         """Update the spws by reading the uvdata."""
-        self.spws = get_spws_indices(self.uvdata)
+        self.spws = get_spws_indices(self.get_uvname(uvtype))
         self.log.debug('Updated SPWs: %s', self.spws)
 
     def read_config(self,
                     default_config: Optional['pathlib.Path'] = None) -> None:
-        """Load a configuration file."""
+        """Load a configuration file.
+        
+        Args:
+          default_config: Optional; Default configuration scheme.
+        """
         self.config = ConfigParser(interpolation=ExtendedInterpolation())
         if default_config is not None and default_config.is_file():
             self.log.info(f'Reading default configuration: {default_config}')
@@ -165,7 +183,12 @@ class FieldHandler:
                                         'neb': f'{self.neb}'})
 
     def update_config(self, write: bool = False, **sections):
-        """Update and write the configuration file."""
+        """Update and write the configuration file.
+        
+        Args:
+          write: Optional; Save to disk.
+          sections: Sections to update with values.
+        """
         # Update file
         self.config.read_dict(sections)
 
@@ -182,12 +205,16 @@ class FieldHandler:
 
     def get_uvname(self, uvtype: str):
         """Get uvdata name from `uvtype`."""
+        if uvtype not in ['', 'continuum', 'uvcontsub']:
+            raise KeyError(f'Unrecognized uv type: {uvtype}' )
+
         if uvtype == 'continuum':
             uvdata = self.uvcontinuum
         elif uvtype == 'uvcontsub':
             uvdata = self.uvcontsub
         else:
             uvdata = self.uvdata
+
         return uvdata
 
     def get_uvsuffix(self, uvtype: str):
@@ -200,15 +227,15 @@ class FieldHandler:
             suffix = ''
         return suffix
 
-    def _flags_from_cont_file(self) -> Dict:
-        """Read line flags from `cont_file`."""
+    def _cont_from_file(self) -> Dict[int, List[str]]:
+        """Read continuum ranges from `cont_file`."""
         # Read file
         with self.cont_file.open() as cfile:
             lines = cfile.readlines()
 
-        # Find source and get flags
+        # Find source and get continuum ranges
         is_field = False
-        flags = {}
+        cont = {}
         spw_orig = list(map(int, self.config['split']['spw'].split(',')))
         for line in lines:
             if line.startswith('Field') and self.name in line:
@@ -222,34 +249,49 @@ class FieldHandler:
             elif '~' not in line:
                 continue
             elif is_field and '~' in line:
-                if spw not in flags:
-                    flags[spw] = [line.split()[0]]
+                if spw not in cont:
+                    cont[spw] = [line.split()[0]]
                 else:
-                    flags[spw].append(line.split()[0])
-        
-        # Copy flags for multi EBs
-        final_flags = {}
+                    cont[spw].append(line.split()[0])
+
+        # Copy continuum ranges for multi EBs
+        final_cont = {}
         for i, spws in enumerate(self.spws):
             for spw in map(int, spws.split(',')):
-                final_flags[spw] = flags[i]
-        final_flags = dict(sorted(final_flags.items()))
+                final_cont[spw] = cont[i]
+        final_cont = dict(sorted(final_cont.items()))
 
-        return final_flags
+        return final_cont
 
-    def get_line_flags(self,
-                       suffix: str,
-                       invert: bool = False,
-                       mask_borders: bool = False,
-                       resume: bool = False) -> str:
-        """Read `cont_file` and assign its lines to theirs `spws`."""
+    def get_spectral_ranges(self,
+                            suffix: str,
+                            invert: bool = False,
+                            mask_borders: bool = False,
+                            resume: bool = False) -> Dict[int,
+                                                          List[Tuple[int]]]:
+        """Get spectral ranges from continuum file.
+        
+        The `cont.dat` contains the spectral ranges where the continuum is
+        calculated. The `invert` parameter allows to select the channels where
+        lines are.
+
+        Args:
+          suffix: File name suffix.
+          invert: Optional; Reverse channel selection?
+          mask_borders: Optional; Mask 10 channels at beginning and end?
+          reume: Optional; Resume where it was left last time?
+
+        Returns:
+          A dictionary mapping SPW numbers with channel ranges.
+        """
         flag_file = self.uvdata.with_suffix(f'{suffix}.json')
         if flag_file.is_file() and resume:
             flags = json.loads(flag_file.read_text())
         else:
-            flags = self._flags_from_cont_file()
+            flags = self._cont_from_file()
             self.log.debug('Flags (frequency): %s', flags)
-            flags = flags_freqs_to_channels(flags, self.uvdata, invert=invert,
-                                            mask_borders=mask_borders)
+            flags = flags_from_cont_ranges(flags, self.uvdata, invert=invert,
+                                           mask_borders=mask_borders)
             flag_file.write_text(json.dumps(flags, indent=4))
         self.log.debug('Flags (channels): %s', flags)
 
@@ -260,8 +302,26 @@ class FieldHandler:
                          spw: Optional[int] = None,
                          beam_oversample: int = 5,
                          sigfig: int = 2,
-                         pbcoverage: float = 1.) -> Tuple[str, int]:
-        """Get cell and image sizes."""
+                         pbcoverage: float = 2.,
+                         section: str = 'imaging') -> Tuple[str, int]:
+        """Get cell and image sizes.
+        
+        Args:
+          uvtype: Optional; Type of uvdata to image.
+          spw: Optional; Select spectral window.
+          beam_oversample: Optional; Number of pixels per beam.
+          sigfig: Optional; Significant figures of the pixel size.
+          pbcoverage: Optional; Number of PB sizes for the image size.
+
+        Returns:
+          CASA compatible cell size and image size.
+        """
+        # Search in config
+        cell = self.config.get(section, 'cell', fallback=None)
+        imsize = self.config.getint(section, 'imsize', fallback=None)
+        if cell is not None and imsize is not None:
+            return cell, imsize
+
         # Get parameters from MS
         uvdata = self.get_uvname(uvtype)
         low_freq, high_freq, longest_baseline = extrema_ms(uvdata, spw=spw)
@@ -269,27 +329,36 @@ class FieldHandler:
         self.log.info('Longest baseline: %s', longest_baseline)
 
         # Size
+        antenna = min(self.get_antenna_diams(self.array))
         beam = gaussian_beam(high_freq, longest_baseline)
-        pbsize = gaussian_primary_beam(low_freq, u.Quantity(self.array))
+        pbsize = gaussian_primary_beam(low_freq, antenna)
         self.log.info('Estimated smallest beam size: %s', beam)
         self.log.info('Estimated largest pb size: %s', pbsize)
 
         # Estimate cell size
         su = synthesisutils()
-        cell = round_sigfig(beam / beam_oversample, sigfig=sigfig)
-        self.log.info('Estimated cell size: %s', cell)
-        imsize = int(2 * pbsize * pbcoverage / cell)
-        self.log.info('Estimated image size: %s', imsize)
-        imsize = su.getOptimumSize(imsize)
-        self.log.info('Optimal image size: %s', imsize)
+        if cell is None:
+            cell = round_sigfig(beam / beam_oversample, sigfig=sigfig)
+            self.log.info('Estimated cell size: %s', cell)
+            cell = f'{cell.value}{cell.unit}'
+            self.config.read_dict({section: {'cell': cell}})
+            self.write_config()
+        if imsize is None:
+            imsize = int(pbsize * pbcoverage / cell)
+            self.log.info('Estimated image size: %s', imsize)
+            imsize = su.getOptimumSize(imsize)
+            self.log.info('Optimal image size: %s', imsize)
+            self.config[section]['imsize'] = f'{imsize}'
+            self.write_config()
 
-        return f'{cell.value}{cell.unit}', imsize
+        return cell, imsize
 
     def clean_data(self,
                    section: str,
                    imagename: Path,
-                   uvtype: str = '',
+                   uvtype: str,
                    nproc: int = 5,
+                   auto_threshold: bool = False,
                    resume: bool = False,
                    **tclean_args):
         """Run tclean on input or stored uvdata.
@@ -297,16 +366,32 @@ class FieldHandler:
         Arguments given under `tclean_args` replace the values from `config`.
 
         Args:
-          section: configuration section.
-          imagename: image directory path.
-          uvtype: optional; type of uvdata to clean.
-          nproc: optional; number of processors for parallel clean.
-          resume: optional; resume where it was left?
-          tclean_args: optional; additional arguments for tclean.
+          section: Configuration section.
+          imagename: Image directory path.
+          uvtype: Type of uvdata to clean.
+          nproc: Optional; Number of processors for parallel clean.
+          auto_threshold: Optional; Calculate threshold from noise in initial
+            dirty image?
+          resume: Optional; Resume where it was left?
+          tclean_args: Optional; Additional arguments for tclean.
         """
         # tclean args
         config = self.config[section]
         kwargs = get_tclean_params(config, cfgvars=tclean_args)
+        if uvtype == 'continuum':
+            kwargs.setdefault('specmode', 'mfs')
+        elif uvtype in ['', 'uvcontsub']:
+            kwargs.setdefault('specmode', 'cube')
+            kwargs.setdefault('outframe', 'LSRK')
+        kwargs.setdefault('deconvolver', 'hogbom')
+        kwargs.setdefault('weighting', 'briggs')
+        kwargs.setdefault('robust', 0.5)
+        kwargs.setdefault('gridder', 'standard')
+        kwargs.setdefault('niter', 100000)
+
+        # Masking
+        if kwargs.get('usemask', '') == 'auto-multithresh':
+            kwargs = recommended_auto_masking(self.array) | kwargs
 
         # Check for files
         if imagename.exists() and resume:
@@ -317,6 +402,12 @@ class FieldHandler:
 
         # Run tclean
         uvdata = self.get_uvname(uvtype)
+        if auto_threshold:
+            kwargs['threshold'] = auto_thresh(uvdata, imagename, nproc,
+                                              kwargs, log=self.log)
+            kwargs['calcpsf'] = False
+            kwargs['calcres'] = False
+            self.log.info('Automatic threshold: %s', kwargs['threshold'])
         tclean_parallel(uvdata, imagename.with_name(imagename.stem),
                         nproc, kwargs, log=self.log)
 
@@ -326,20 +417,26 @@ class FieldHandler:
                       uvtype: str = '',
                       nproc: int = 5,
                       resume: bool = False,
-                      **tclean_args):
+                      get_spectra: bool = False,
+                      **tclean_args) -> List[Path]:
         """Run `tclean` on all spws.
         
         Arguments given under `tclean_args` replace the values from `config`.
 
         Args:
-          section: configuration section.
-          outdir: output directory path.
-          uvtype: optional; type of uvdata to clean.
-          nproc: optional; number of processors for parallel clean.
-          resume: optional; resume where it was left?
-          tclean_args: optional; additional arguments for tclean.
+          section: Configuration section.
+          outdir: Output directory path.
+          uvtype: Optional; Type of uvdata to clean.
+          nproc: Optional; Number of processors for parallel clean.
+          resume: Optional; Resume where it was left?
+          get_spectra: Optional; Extract spectra from cubes per spw?
+          tclean_args: Optional; Additional arguments for tclean.
+
+        Returns:
+          A list with the image file names.
         """
         # Iterate over spws
+        imagenames = []
         for i, spw in enumerate(self.spws):
             # Clean args
             suffix = self.get_uvsuffix(uvtype)
@@ -347,35 +444,59 @@ class FieldHandler:
                                   f'{suffix}.image')
 
             # Check for files
+            trigger = True
             if imagename.exists() and resume:
                 self.log.info('Skipping cube for spw %i', i)
-                continue
+                trigger = False
             elif imagename.exists() and not resume:
                 self.log.warning('Deleting cubes for spw %i', i)
                 os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
             # Parameters
-            cell = self.config.get(section, 'cell', vars=tclean_args,
-                                   fallback=None)
-            imsize = self.config.get(section, 'imsize', vars=tclean_args,
-                                     fallback=None)
-            impars = {}
-            if cell is None or imsize is None:
-                new_cell, new_imsize = self.get_image_scales(spw=i)
-                if cell is None:
-                    impars['cell'] = new_cell
-                if imsize is None:
-                    impars['imsize'] = f'{new_imsize}'
+            #cell = self.config.get(section, 'cell', vars=tclean_args,
+            #                       fallback=None)
+            #imsize = self.config.get(section, 'imsize', vars=tclean_args,
+            #                         fallback=None)
+            #impars = {}
+            #if cell is None or imsize is None:
+            #    self.log.info('Determining imaging parameter from MS')
+            #    new_cell, new_imsize = self.get_image_scales(spw=i,
+            #                                                 uvtype=uvtype)
+            #    if cell is None:
+            #        impars['cell'] = new_cell
+            #    if imsize is None:
+            #        impars['imsize'] = f'{new_imsize}'
 
             # Run clean
-            self.clean_data(section, imagename, uvtype=uvtype, nproc=nproc,
-                            resume=resume, spw=spw, **tclean_args, **impars)
-            print('-' * 80)
+            #self.log.debug('Imaging parameters: %s', impars)
+            if trigger:
+                self.clean_data(section, imagename, uvtype, nproc=nproc,
+                                resume=resume, spw=spw, **tclean_args)#, **impars)
+            imagenames.append(imagename)
+
+            # Extract spectrum
+            if get_spectra:
+                self.log.info('Extracting spectra')
+                fitsimage = imagename.with_suffix('.image.fits')
+                if not fitsimage.exists():
+                    exportfits(imagename=f'{imagename}',
+                               fitsimage=f'{fitsimage}')
+                self.spectra.append(extract_spectrum(fitsimage))
+            self.log.info('-' * 80)
+
+        return imagenames
 
     def contsub(self,
                 section: str = 'contsub',
-                resume: bool = False) -> None:
-        """Run `uvcontsub` to obtain continuum subtracted visibilities."""
+                resume: bool = False,
+                plot_selection: bool = False) -> None:
+        """Run `uvcontsub` to obtain continuum subtracted visibilities.
+        
+        Args:
+          section: Optional; Configuration section.
+          resume: Optional; Continue from where it was left?
+          plot_selection: Optional; Plot selection for `fitspec`?
+        """
         val_step = validate_step(resume, self.uvcontsub, log=self.log.warning)
         if not val_step:
             return
@@ -383,23 +504,43 @@ class FieldHandler:
         # Prepare input
         suffix = self.get_uvsuffix('uvcontsub')
         mask_borders = self.config.getboolean(section, 'mask_borders')
-        fitspec = self.get_line_flags(suffix, invert=False,
-                                      mask_borders=mask_borders, resume=resume)
+        fitspec = self.get_spectral_ranges(suffix, invert=True,
+                                           mask_borders=mask_borders,
+                                           resume=resume)
         fitorder = self.config.getint(section, 'fitorder', fallback=1)
+
+        # Plot?
+        if plot_selection and len(self.spectra) != 0:
+            self.log.info('Plotting spectra for contsub')
+            outdir = self.uvcontsub.parent / 'plots'
+            outdir.mkdir(exist_ok=True)
+            plot_spectral_selection(self.spectra, fitspec, self.uvdata,
+                                    self.spws, outdir, suffix=suffix)
+        elif plot_selection:
+            self.log.info('No spectra to plot')
 
         # Run uvcontsub
         uvcontsub(vis=f'{self.uvdata}', outputvis=f'{self.uvcontsub}',
-                  fitspec=fitspec, fitorder=fitorder)
+                  fitspec=clumps_to_casa(fitspec), fitorder=fitorder)
 
     def continuum_vis(self,
                       section: str = 'continuum',
-                      resume: bool = False) -> None:
+                      resume: bool = False,
+                      plot_selection: bool = False) -> Tuple[Path]:
         """Generate continuum visibilities.
 
         It generates 2 visibility sets:
 
         - Average of all the channels using the input width.
         - Average of the line free channels using the `cont_file` and width.
+
+        Args:
+          section: Optional; Configuration section.
+          resume: Optional; Continue from where it was left?
+          plot_selection: Optional; Plot selection for flagged channels?
+
+        Returns:
+          The line-free and averaged MS file names.
         """
         # Check cont_file
         if self.cont_file is None:
@@ -421,7 +562,7 @@ class FieldHandler:
             self.config[section]['width'] = ','.join(map(str, width))
             self.write_config()
         self.log.info('Continuum bins: %s', width)
-        datacolumn = self.config[section]['datacolumn']
+        datacolumn = self.config.get(section, 'datacolumn', fallback='data')
 
         if val_all:
             # Average channels without flagging
@@ -430,14 +571,28 @@ class FieldHandler:
         if val_lf:
             # Get line free channels
             suffix = self.get_uvsuffix('continuum')
-            flag_chans = self.get_line_flags(suffix, invert=True, resume=resume)
+            mask_borders = self.config.getboolean(section, 'mask_borders')
+            flag_chans = self.get_spectral_ranges(suffix,
+                                                  mask_borders=mask_borders,
+                                                  resume=resume)
+            casa_flag_chans = clumps_to_casa(flag_chans)
+
+            # Plot?
+            if plot_selection and len(self.spectra) != 0:
+                self.log.info('Plotting spectra for line flags')
+                outdir = linefree.parent / 'plots'
+                outdir.mkdir(exist_ok=True)
+                plot_spectral_selection(self.spectra, flag_chans, self.uvdata,
+                                        self.spws, outdir, suffix=suffix)
+            elif plot_selection:
+                self.log.info('No spectra to plot')
 
             # Split the uvdata
             # WARNING: this needs to be tested
             # otherwise, use flagmanager and then split the visibilities
             flagmanager(vis=f'{self.uvdata}', mode='save',
                         versionname='before_cont_flags')
-            flagdata(vis=f'{self.uvdata}', mode='manual', spw=flag_chans,
+            flagdata(vis=f'{self.uvdata}', mode='manual', spw=casa_flag_chans,
                      flagbackup=False)
             split_ms(vis=f'{self.uvdata}', outputvis=f'{linefree}',
                      width=width, datacolumn=datacolumn)
@@ -448,7 +603,7 @@ class FieldHandler:
 
 @dataclass
 class FieldManager:
-    """Manage field information."""
+    """Manage field information for different array configurations."""
     log: 'logging.Logger'
     """Logging object."""
     resume: bool = False
@@ -457,7 +612,7 @@ class FieldManager:
     """Original data for each array."""
     split: Dict[str, Tuple[Path]] = dcfield(default_factory=new_array_dict)
     """Split data for each array."""
-    data_handler: Dict[str, FieldHandler] = dcfield(default_factory=dict)
+    data_handler: Dict[str, ArrayHandler] = dcfield(default_factory=dict)
     """Data handler."""
     field: InitVar[Optional[str]] = None
     """Field name."""
@@ -474,9 +629,11 @@ class FieldManager:
 
     def __post_init__(self, field, original_uvdata, datadir, default_config,
                       configfile, cont_file):
+        # When original_data is given, then split the field and fill the object
         if original_uvdata is not None:
-            self.append_data(field=field,
-                             original_uvdata=original_uvdata,
+            self.log.info('Appending data from original MS')
+            self.append_data(original_uvdata,
+                             field=field,
                              default_config=default_config,
                              configfile=configfile,
                              cont_file=cont_file,
@@ -484,71 +641,116 @@ class FieldManager:
 
     @property
     def name(self):
+        """Name associated to the field."""
         return self.data_handler[list(self.data_handler.keys())[0]].field
 
+    @property
+    def arrays(self) -> Tuple[str]:
+        """Names of stored arrays."""
+        return tuple(self.data_handler.keys())
+
     def datadir(self, array: str) -> Path:
+        """Data directory where uvdata is stored."""
         return self.data_handler[array].uvdata.parent
 
     def _init_data_handler(self,
                            field: str,
                            array: str,
-                           **kwargs):
-        self.data_handler[array] = FieldHandler(field,
+                           **kwargs) -> ArrayHandler:
+        # Shortcut
+        self.data_handler[array] = ArrayHandler(field,
                                                 array,
                                                 self.log,
                                                 **kwargs)
 
+        return self.data_handler[array]
+
     def append_data(self,
+                    original_uvdata: Path,
                     field: Optional[str] = None,
-                    original_uvdata: Optional[Path] = None,
-                    #split_uvdata: Optional[Path] = None,
                     default_config: Optional[Path] = None,
                     configfile: Optional[Path] = None,
                     cont_file: Optional[Path] = None,
                     datadir: Optional[Path] = None):
-        """Update information in field."""
-        if original_uvdata is not None:
-            # Store original data
-            array = get_array(original_uvdata)
-            self.log.debug('Data array: %s', array)
-            self.original[array] += (original_uvdata,)
-            self.log.debug('Original data: %s', self.original)
+        """Append or update data from original calibrated MS.
+        
+        Args:
+          original_uvdata: Original uv data.
+          field: Optional; Field name.
+          default_config: Optional; Default configuration file name.
+          configfile: Optional; Configuration file name.
+          cont_file: Optional; Continuum file name.
+          datadir: Optional; Data directory.
+        """
+        # Store original data for each array and calculate the number of EBs
+        array = get_array(original_uvdata)
+        self.log.info('Data array: %s', array)
+        self.original[array] += (original_uvdata,)
+        self.log.debug('Original data: %s', self.original)
+        neb = len(self.original[array])
 
-            # Update handler
-            neb = len(self.original[array])
-            if (handler:= self.data_handler.get(array)) is None:
-                self.log.debug('Generating new data handler')
-                self._init_data_handler(field,
-                                        array,
-                                        default_config=default_config,
-                                        configfile=configfile,
-                                        cont_file=cont_file,
-                                        datadir=datadir,
-                                        neb=neb)
-            else:
-                self.log.debug('Updating data handler')
-                handler.neb = neb
-                handler.update_config(DEFAULT={'neb': f'{neb}'})
+        # Update or create new ArrayHandler
+        if (handler:= self.data_handler.get(array)) is None:
+            self.log.debug('Generating new data handler')
+            handler = self._init_data_handler(field,
+                                              array,
+                                              default_config=default_config,
+                                              configfile=configfile,
+                                              cont_file=cont_file,
+                                              datadir=datadir,
+                                              neb=neb)
+        else:
+            self.log.debug('Updating data handler')
+            handler.neb = neb
+            handler.update_config(DEFAULT={'neb': f'{neb}'})
 
-            # Split?
-            split = self.datadir(array) / f'{self.name}_{array}_eb{neb}.ms'
-            if split.exists() and not self.resume:
-                self.log.warning('Deleting split ms: %s', split)
-                os.system(f'rm -rf {split}')
-            if not split.exists():
-                self.log.info('Splitting input ms to: %s', split)
-                self.split_field(array, original_uvdata, split)
-            else:
-                self.log.info('Found split ms: %s', split)
-            self.split[array] += (split,)
-            self.log.debug('Split data: %s', self.split)
+
+        # Split the data from original MS?
+        split = self.datadir(array) / f'{self.name}_{array}_eb{neb}.ms'
+        uvdata = handler.uvdata
+        if split.exists() and not self.resume:
+            self.log.warning('Deleting split ms: %s', split)
+            os.system(f'rm -rf {split}')
+        if uvdata.exists() and not self.resume:
+            self.log.warning('Deleting concat ms: %s', uvdata)
+            os.system(f'rm -rf {uvdata}')
+        if not split.exists() and not uvdata.exists():
+            self.log.info('Splitting input ms to: %s', split)
+            self.split_field(array, original_uvdata, split)
+        elif uvdata.exists():
+            self.log.info('Will not split original, uv data exists')
+        else:
+            self.log.info('Found split ms: %s', split)
+        self.split[array] += (split,)
+        self.log.debug('Split data: %s', self.split)
+
+    def get_uvnames(self,
+                    arrays: Sequence[str],
+                    uvtype: str = '') -> Tuple[Path]:
+        """Obtain uv data file names for an array.
+
+        Args:
+          arrays: Arrays to use.
+          uvtype: Type of uv data (`'', 'continuum', 'uvcontsub'`).
+        """
+        uvnames = tuple()
+        for array in arrays:
+            uvnames += (self.data_handler[array].get_uvname(uvtype),)
+
+        return uvnames
 
     def split_field(self, array: str, uvdata: Path, splitvis: Path):
-        """Split field from input uvdata."""
+        """Split field from input uvdata.
+        
+        Args:
+          array: Name of the array.
+          uvdata: MS file name.
+          splitvis: Output MS file name.
+        """
         # Split parameters
         if ((spw := self.data_handler[array].config.get(
             'split', 'spw', fallback=None)) is None):
-            spw = find_spws(self.name, uvdata)
+            spw = find_spws(uvdata)
             self.data_handler[array].update_config(split={'spw': spw})
         datacolumn = self.data_handler[array].config['split']['datacolumn']
 
@@ -572,9 +774,9 @@ class FieldManager:
             elif concatvis.exists() and self.resume:
                 continue
 
-            # Concat
+            # Concat data if needed
             if len(vis) == 0:
-                self.log.warning('Data handler created but no data: %s', array)
+                self.log.error('Data handler created but no data: %s', array)
                 raise ValueError('Missing data')
             elif len(vis) == 1:
                 self.log.info('Moving %s to: %s', vis[0], concatvis)
@@ -587,87 +789,218 @@ class FieldManager:
             # Update handler spws
             handler.update_spws()
 
-    def dirty_cubes(self,
-                    section: str = 'dirty_cubes',
-                    uvtype: str = '',
-                    nproc: int = 5,
-                    arrays: Optional[Sequence[str]] = None,
-                    outdir: Optional[Path] = None):
-        """Calculate dirty cubes per spw."""
+    #def dirty_cubes(self,
+    #                section: str = 'dirty_cubes',
+    #                uvtype: str = '',
+    #                nproc: int = 5,
+    #                arrays: Optional[Sequence[str]] = None,
+    #                outdir: Optional[Path] = None,
+    #                get_spectra: bool = False):
+    #    """Calculate dirty cubes per spw.
+    #    
+    #    The argument `uvtype` is used to determine the uv data file name.
+    #    Available values are `['', 'continuum', 'uvcontsub']` to compute dirty
+    #    images from the calibrated data, continuum data, or continuum
+    #    subtracted data, respectively.
+
+    #    Args:
+    #      section: Optional; Configuration section.
+    #      uvtype: Optional; Type of uvdata to image.
+    #      nproc: Optional; Number of parallel processes.
+    #      arrays: Optional; Array configurations to image.
+    #      outdir: Optional; Output directory.
+    #      get_spectra: Optional; Extract spectra from dirty cubes?
+    #    """
+        # Select arrays
+        #if arrays is None:
+        #    arrays = self.data_handler.keys()
+
+        ## Iterate over selected arrays
+        #for array in arrays:
+        #    # Check input
+        #    handler = self.data_handler[array]
+        #    if outdir is None:
+        #        outdir = handler.uvdata.parent / section
+        #    outdir.mkdir(exist_ok=True)
+
+        #    # Global imaging sizes
+        #    cell = handler.config.get('imaging', 'cell', fallback=None)
+        #    imsize = handler.config.get('imaging', 'imsize', fallback=None)
+        #    if cell is None or imsize is None:
+        #        new_cell, new_imsize = handler.get_image_scales(uvtype=uvtype)
+        #        if cell is None:
+        #            handler.config[section]['cell'] = new_cell
+        #        if imsize is None:
+        #            handler.config[section]['imsize'] = f'{new_imsize}'
+        #        handler.write_config()
+
+        #    # Clean spws
+        #    self.log.info('Computing dirty cubes for array: %s', array)
+        #    handler.clean_per_spw(section, outdir=outdir,
+        #                          nproc=nproc, uvtype=uvtype,
+        #                          get_spectra=get_spectra,
+        #                          resume=self.resume, niter=0)
+        #    print('=' * 80)
+
+    def array_imaging(self,
+                      arrays: Optional[Sequence[str]] = None,
+                      outdir: Optional[Path] = None,
+                      section: str = 'continuum',
+                      uvtype: str = 'continuum',
+                      nproc: int = 5,
+                      auto_threshold: bool = False,
+                      per_spw: bool = False,
+                      get_spectra: bool = False,
+                      **tclean_args):
+        """Image an array.
+
+        Args:
+          arrays: Optional; Array to image.
+          outdirs: Optional; Output directory.
+          section: Optional; Configuration section with `tclean` parameters.
+          uvtype: Optional; Type of uv data to clean.
+          nproc: Optional; Number of parallel processes for cleaning.
+          auto_threshold: Optional; Calculate threshold from noise in initial
+            dirty image?
+          per_spw: Optional; Clean each SPW individually?
+          get_spectra: Optional; Extract spectra from cubes per SPW?
+          tclean_args: Optional; Additional `casatasks.tclean` arguments.
+        """
         # Select arrays
         if arrays is None:
             arrays = self.data_handler.keys()
 
         # Iterate over selected arrays
         for array in arrays:
-            # Check input
+            # Environment variables
             handler = self.data_handler[array]
+            # Skip 7m12m for uvtype=''
+            if array == '7m12m' and not handler.get_uvname(uvtype).exists():
+                self.log.info('Skipping imaging for %s', array)
+                continue
             if outdir is None:
                 outdir = handler.uvdata.parent / section
             outdir.mkdir(exist_ok=True)
 
-            # Global imaging sizes
-            cell = handler.config.get(section, 'cell', fallback=None)
-            imsize = handler.config.get(section, 'imsize', fallback=None)
-            if cell is None or imsize is None:
-                new_cell, new_imsize = handler.get_image_scales()
-                if cell is None:
-                    handler.config[section]['cell'] = new_cell
-                if imsize is None:
-                    handler.config[section]['imsize'] = f'{new_imsize}'
-                handler.write_config()
+            # Fill tclean parameters
+            impars = handler.get_image_scales(uvtype=uvtype)
+            tclean_args['cell'] = impars[0]
+            tclean_args['imsize'] = impars[1]
+            #tclean_args['cell'] = handler.config.get('imaging', 'cell',
+            #                                         fallback=None)
+            #tclean_args['imsize'] = handler.config.get('imaging', 'imsize',
+            #                                           fallback=None)
+            #if tclean_args['cell'] is None or tclean_args['imsize'] is None:
+            #    impars = handler.get_image_scales(uvtype=uvtype)
+            #    if tclean_args['cell'] is None:
+            #        tclean_args['cell'] = impars[0]
+            #    if tclean_args['imsize'] is None:
+            #        tclean_args['imsize'] = f'{impars[1]}'
+            #    handler.write_config()
 
-            # Clean spws
-            self.log.info('Computing dirty cubes for array: %s', array)
-            handler.clean_per_spw(section, outdir=outdir, nproc=nproc,
-                                  uvtype=uvtype, resume=self.resume, niter=0)
-            print('=' * 80)
+            # Clean cases
+            if per_spw:
+                handler.clean_per_spw(section, outdir=outdir,
+                                      nproc=nproc, uvtype=uvtype,
+                                      get_spectra=get_spectra,
+                                      resume=self.resume, **tclean_args)
+            else:
+                suffix = handler.get_uvsuffix(uvtype)
+                robust = handler.config.get(section, 'robust',
+                                            vars=tclean_args, fallback=0.5)
+                imagename = f'{handler.name}_{array}_robust{robust}'
+                imagename = outdir / f'{imagename}{suffix}.image'
+                handler.clean_data(section, imagename, uvtype, nproc=nproc,
+                                   auto_threshold=auto_threshold,
+                                   resume=self.resume, **tclean_args)
+            self.log.info('=' * 80)
 
     def contsub_visibilities(self,
                              dirty_images: bool = False,
-                             nproc: int = 5):
-        """Compute continuum subtracted visibilities."""
+                             nproc: int = 5,
+                             get_spectra: bool = False):
+        """Compute continuum subtracted visibilities.
+        
+        Args:
+          dirty_images: Optional; Compute dirty images?
+          nproc: Optional; Number of parallel processes for cleaning.
+          get_spectra: Optional; Extract spectra from dirty cubes?
+        """
         for array, handler in self.data_handler.items():
             self.log.info('Computing contsub visibilities for array: %s', array)
-            handler.contsub(resume=self.resume)
+            handler.contsub(resume=self.resume, plot_selection=True)
 
-            # Compute dirty
-            if dirty_images:
-                self.dirty_cubes(uvtype='uvcontsub', nproc=nproc)
+        # Compute dirty
+        if dirty_images:
+            self.array_imaging(uvtype='uvcontsub', nproc=nproc,
+                               section='dirty_cubes', per_spw=True,
+                               get_spectra=get_spectra, niter=0)
 
     def continuum_visibilities(self,
                                control_image: bool = False,
                                nproc: int = 5,
                                outdir: Optional[Path] = None):
-        """Compute continuum visibilities for data."""
+        """Compute continuum visibilities for data.
+        
+        Args:
+          control_image: Optional; Calculate control image?
+          nproc: Optional; Number of parallel processes for cleaning.
+          outdir: Optional; Output directory.
+        """
         for array, handler in self.data_handler.items():
             self.log.info('Computing cont visibilities for array: %s', array)
-            handler.continuum_vis(resume=self.resume)
+            handler.continuum_vis(resume=self.resume, plot_selection=True)
 
-            # Make a control image
-            if control_image:
-                # Parameters
-                tclean_args = {}
-                section = 'continuum'
-                uvtype = 'continuum'
-                tclean_args['cell'] = handler.config.get(section, 'cell',
-                                                         fallback=None)
-                tclean_args['imsize'] = handler.config.get(section, 'imsize',
-                                                           fallback=None)
-                if tclean_args['cell'] is None or tclean_args['imsize'] is None:
-                    impars = handler.get_image_scales(uvtype=uvtype)
-                    if tclean_args['cell'] is None:
-                        tclean_args['cell'] = impars[0]
-                    if tclean_args['imsize'] is None:
-                        tclean_args['imsize'] = f'{impars[1]}'
-                if outdir is None:
-                    outdir = handler.uvdata.parent / f'{section}_control'
-                outdir.mkdir(exist_ok=True)
-                suffix = handler.get_uvsuffix(uvtype)
-                imagename = outdir / f'{handler.name}_{array}{suffix}.image'
-                handler.clean_data(section, imagename, uvtype=uvtype,
-                                   nproc=nproc, resume=self.resume,
-                                   **tclean_args)
+        # Make a control image
+        if control_image:
+            self.array_imaging(outdir=outdir, section='continuum_control',
+                               nproc=nproc, auto_threshold=True)
+
+    def combine_arrays(self,
+                       arrays: Sequence[str],
+                       uvtypes: Sequence[str] = ('uvcontsub', 'continuum'),
+                       default_config: Optional[Path] = None,
+                       datadir: Optional[Path] = None,
+                       control_images: bool = False,
+                       nproc: int = 5):
+        """Combine uv data of different arrays."""
+        # Useful values
+        new_array = ''.join(arrays)
+        neb = sum(self.data_handler[array].neb for array in arrays)
+
+        # Create handler
+        self._init_data_handler(self.name, new_array, datadir=datadir,
+                                default_config=default_config, neb=neb)
+        handler = self.data_handler[new_array]
+
+        # Concatenate products
+        for uvtype in uvtypes:
+            # Select data to concatenate
+            self.log.info('Concatenating MSs for uvtype: %s', uvtype)
+            to_concat = list(map(str, self.get_uvnames(arrays, uvtype=uvtype)))
+            concatvis = handler.get_uvname(uvtype)
+
+            # Concatenate
+            if concatvis.exists() and not self.resume:
+                self.log.warning('Deleting combined array data: %s', concatvis)
+                os.system(f'rm -rf {concatvis}')
+            if not concatvis.exists():
+                self.log.debug('Concatenating MSs: %s', to_concat)
+                concat(vis=to_concat, concatvis=f'{concatvis}')
+            if uvtype == 'uvcontsub':
+                handler.update_spws(uvtype=uvtype)
+
+            # Control images
+            if control_images:
+                if uvtype == 'uvcontsub':
+                    self.array_imaging(arrays=[new_array], uvtype=uvtype,
+                                       section='dirty_cubes', per_spw=True,
+                                       nproc=nproc, niter=0)
+                elif uvtype == 'continuum':
+                    self.array_imaging(arrays=[new_array],
+                                       section='continuum_control',
+                                       auto_threshold=True,
+                                       nproc=nproc)
 
     def write_configs(self):
         """Write configs to disk."""
@@ -675,14 +1008,17 @@ class FieldManager:
             handler.write_config()
 
 class DataManager(Dict):
-    """Manage pipeline data."""
+    """Manage pipeline data.
+    
+    It associates each field with a `FieldManager`.
+    """
     def __init__(self, log: 'logging.Logger', **kwargs):
         self.log = log
         super().__init__(kwargs)
 
     @classmethod
     def from_uvdata(cls,
-                    uvdata: Path,
+                    uvdata: Sequence[Path],
                     default_config: Path,
                     log: 'logging.Logger',
                     datadir: Path = Path('./'),
@@ -692,6 +1028,14 @@ class DataManager(Dict):
 
         It uses the input uvdata to find target fields and generates a
         configuration file for each.
+
+        Args:
+          uvdata: MS file name(s).
+          default_config: A default configuration skeleton.
+          log: A `logging` object.
+          datadir: Optional; Where the data generated will be stored.
+          cont: Optional; A list of continuum files for each `uvdata`.
+          resume: Optional; Continue from where it was left?
         """
         # First pass: iterate over uvdata and define fields
         fields = {}
@@ -715,7 +1059,11 @@ class DataManager(Dict):
                 print('-' * 80)
                 if field in fields:
                     log.info('Updating field: %s', field)
-                    fields[field].append_data(original_uvdata=ms)
+                    fields[field].append_data(ms,
+                                              field=field,
+                                              default_config=default_config,
+                                              cont_file=cont_file,
+                                              datadir=datadir)
                     continue
                 # Read config
                 log.info('Setting up field: %s', field)
@@ -739,7 +1087,7 @@ class DataManager(Dict):
 
     @classmethod
     def from_configs(cls,
-                     configfiles: Path,
+                     configfiles: Sequence[Path],
                      log: 'logging.Logger',
                      datadir: Path = Path('./'),
                      cont: Optional[Sequence[Path]] = None,
@@ -747,6 +1095,13 @@ class DataManager(Dict):
         """Generate a `DataManager` from input configuration files.
 
         At the moment it assumes the data is ready for processesing.
+
+        Args:
+          configfiles: A list of configuration files.
+          log: A `logging` object.
+          datadir: Optional; Where the data generated will be stored.
+          cont: Optional; A list of continuum files for each `uvdata`.
+          resume: Optional; Continue from where it was left?
         """
         # Iterate over files
         fields = {}
@@ -756,7 +1111,7 @@ class DataManager(Dict):
                 cont_file = cont[i]
             else:
                 cont_file = None
-            handler = FieldHandler(configfile=cfg, datadir=datadir,
+            handler = ArrayHandler(configfile=cfg, datadir=datadir,
                                    cont_file=cont_file, log=log)
 
             # Update field

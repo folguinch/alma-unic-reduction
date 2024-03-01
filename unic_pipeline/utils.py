@@ -3,12 +3,18 @@ from typing import List, Optional, Sequence, Callable, Dict, Union, Tuple
 from inspect import signature
 import os
 
-from casatasks import vishead
 from casatools import msmetadata, ms
 import astropy.units as u
 import numpy as np
 
 from .common_types import SectionProxy
+
+def get_metadata(uvdata: 'pathlib.Path'):
+    """Read metadata from MS."""
+    metadata = msmetadata()
+    metadata.open(f'{uvdata}')
+
+    return metadata
 
 def gaussian_primary_beam(freq: u.Quantity, diameter: u.Quantity) -> u.Quantity:
     """Calculate the angular size of a Gaussian primary beam."""
@@ -75,8 +81,7 @@ def extrema_ms(uvdata: 'pathlib.Path',
 def get_targets(uvdata: 'pathlib.Path',
                 intent: str = 'OBSERVE_TARGET#ON_SOURCE') -> Sequence[str]:
     """Identify targets and return the field names."""
-    metadata = msmetadata()
-    metadata.open(f'{uvdata}')
+    metadata = get_metadata(uvdata)
     fields = metadata.fieldsforintent(intent, asnames=True)
     metadata.close()
 
@@ -87,8 +92,7 @@ def get_array(uvdata: 'pathlib.Path') -> str:
 
     WARNING: TP has not been implemented yet.
     """
-    metadata = msmetadata()
-    metadata.open(f'{uvdata}')
+    metadata = get_metadata(uvdata)
     diameters = metadata.antennadiameter()
     is12m = [int(val['value']) == 12 for val in diameters.values()]
     is7m = [int(val['value']) == 7 for val in diameters.values()]
@@ -145,12 +149,11 @@ def max_chan_width(freq: u.Quantity,
 def continuum_bins(uvdata: 'pathlib.Path',
                    diameter: u.Quantity) -> Sequence[int]:
     """Find the maximum continuum bin sizes."""
-    metadata = msmetadata()
-    metadata.open(f'{uvdata}')
+    metadata = get_metadata(uvdata)
     bandwidths = metadata.bandwidths()
     bins = []
     for i in range(metadata.nspw()):
-        low_freq, high_freq, baseline = extrema_ms(uvdata, spw=i)
+        low_freq, _, baseline = extrema_ms(uvdata, spw=i)
         max_width = max_chan_width(low_freq, diameter, baseline)
         ngroups = bandwidths[i] * u.Hz / max_width
         ngroups = int(ngroups.to(1))
@@ -160,101 +163,160 @@ def continuum_bins(uvdata: 'pathlib.Path',
             ngroups, binsize = find_near_exact_denominator(metadata.nchan(i),
                                                            ngroups)
         bins.append(binsize)
+    metadata.close()
 
     return bins
 
-def flags_freqs_to_channels(flags: Dict[int, List[str]],
-                            uvdata: 'pathlib.Path',
-                            invert: bool = False,
-                            mask_borders: bool = False,
-                            border: int = 10) -> str:
-    """Convert flags in LSRK frequencies to channels."""
+def flags_from_cont_ranges(ranges: Dict[int, List[str]],
+                           uvdata: 'pathlib.Path',
+                           invert: bool = False,
+                           mask_borders: bool = False,
+                           border: int = 10) -> Dict[int, List[Tuple[int]]]:
+    """Convert continuum ranges into channel flags.
+    
+    It uses input continuum ranges in LSRK frequency and convert them into
+    channel flags. The flags correspond to channels that will be flagged to
+    compute the continuum.
+
+    If `invert` is set, then the output channel ranges will correspond to
+    channels that are not flagged.
+
+    Args:
+      ranges: Ranges of continuum frequencies per SPW.
+      uvdata: UV data to extract the frequency axis.
+      invert: Optional; Return unflagged data?
+      mask_borders: Optional; Mask (flag) channels at the borders?
+      border: Optional; Amount of channels to mask (flag).
+
+    Returns:
+      A dictionary associating each SPW with flagged channel ranges.
+    """
     mstool = ms()
     mstool.open(f'{uvdata}')
-    flags_chan = []
-    for spw, flags_freq in flags.items():
+    flags_chan = {}
+    for spw, rng_spw in ranges.items():
         # Convert to masked array
         freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK') * u.Hz
         freqs = np.ma.array(freqs.to(u.GHz).value)
+
+        # Mask the frequencies
+        for rng in rng_spw:
+            freq_ran = list(map(u.Quantity, rng.split()[0].split('~')))
+            freq_ran[0] = freq_ran[0] * freq_ran[1].unit
+            freq_ran = freq_ran[0].to(u.GHz).value, freq_ran[1].to(u.GHz).value
+            freqs = np.ma.masked_inside(freqs, *freq_ran)
+
+        # Invert channel selection to convert into flags
+        freqs = np.ma.array(freqs.data, mask=~freqs.mask)
+
+        # Mask borders
         if mask_borders:
             freqs[:border] = np.ma.masked
             freqs[-border:] = np.ma.masked
 
-        # Mask the frequencies
-        for flag in flags_freq:
-            aux = list(map(lambda x: u.Quantity(x), flag.split()[0].split('~')))
-            aux[0] = aux[0] * aux[1].unit
-            aux = aux[0].to(u.GHz).value, aux[1].to(u.GHz).value
-            freq_low = np.min(aux)
-            freq_high = np.max(aux)
-            freqs = np.ma.masked_where((freqs>=freq_low) & (freqs<=freq_high),
-                                       freqs)
-
-        # Convert to indices
+        # Clump (un)masked data
         if invert:
             clumps = np.ma.clump_unmasked(freqs)
         else:
             clumps = np.ma.clump_masked(freqs)
-        spw_flags = []
+
+        # Convert to indices
+        clump_ind = []
         for clump in clumps:
-            spw_flags.append(f'{clump.start}~{clump.stop-1}')
-        flags_chan.append(f'{spw}:' + ';'.join(spw_flags))
+            clump_ind.append((int(clump.start), int(clump.stop-1)))
+        flags_chan[spw] = clump_ind
 
-    return ','.join(flags_chan)
+    # Close tool
+    mstool.close()
 
-def find_spws(field: str, uvdata: 'pathlib.Path') -> str:
+    return flags_chan
+
+def clumps_to_casa(clumps_per_spw: Dict[int, List[Tuple[int]]]) -> str:
+    """Convert ranges per SPW into casa format."""
+    ranges = []
+    for spw, clumps in clumps_per_spw.items():
+        spw_ranges = map(lambda x: f'{x[0]}~{x[1]}', clumps)
+        ranges.append(f'{spw}:' + ';'.join(spw_ranges))
+
+    return ','.join(ranges)
+
+def find_spws(uvdata: 'pathlib.Path',
+              intent: str = 'OBSERVE_TARGET#ON_SOURCE') -> str:
     """Filter science spws for source."""
-    metadata = msmetadata()
-    metadata.open(f'{uvdata}')
+    metadata = get_metadata(uvdata)
     spws = []
-    for spw in metadata.spwsforfield(field):
+    for spw in metadata.spwsforintent(intent):
         if 'FULL_RES' in metadata.namesforspws(spw)[0]:
             spws.append(str(spw))
     metadata.close()
 
     return ','.join(spws)
 
-def get_spws(vis: 'pathlib.Path') -> List:
-    """Retrieve the spws in a visibility ms."""
-    return vishead(vis=str(vis), mode='get', hdkey='spw_name')[0]
+#def get_spws(vis: 'pathlib.Path') -> List:
+#    """Retrieve the spws in a visibility ms."""
+#    return vishead(vis=str(vis), mode='get', hdkey='spw_name')[0]
 
-def get_spws_indices(vis: 'pathlib.Path',
-                     spws: Optional[Sequence[str]] = None) -> List:
+def get_spws_indices(uvdata: 'pathlib.Path',
+                     selected: Optional[Sequence[str]] = None) -> List[str]:
     """Get the indices of the spws.
 
     This task search for duplicated spws (e.g. after measurement set
     concatenation) and groups the spws indices.
 
     Args:
-      vis: measurement set.
-      spws: optional; selected spectral windows.
+      vis: Measurement set.
+      selected: optional; Selected spectral windows.
 
     Returns:
       A list with the spws in the vis ms.
     """
+    # Open meta data
+    metadata = get_metadata(uvdata)
+
+    # Create dictionary indexing spws with (baseband, subwin)
+    names_spw = metadata.spwsfornames()
+    bb_info = {}
+    for name, ind in names_spw.items():
+        aux = name.split('#')
+        key = aux[2].split('_')[1], aux[3].split('-')[1]
+        val = bb_info.get(key, [])
+        val += list(ind)
+        bb_info[key] = sorted(val)
+
+    # Extract spws
+    spws = sorted(bb_info.values(), key=lambda x: x[0])
+    metadata.close()
+
+    if selected is not None:
+        return [','.join(map(str, spw))
+                for i, spw in enumerate(spws)
+                if f'{i}' in selected]
+    else:
+        return [','.join(map(str, spw)) for spw in spws]
+
     # Spectral windows names
     # Extract name by BB_XX and subwin SW_YY
-    names = [aux.split('#')[2]+'_'+aux.split('#')[3] for aux in get_spws(vis)]
-    name_set = set(names)
+    #names = [aux.split('#')[2]+'_'+aux.split('#')[3] for aux in get_spws(vis)]
+    #name_set = set(names)
 
-    # Cases
-    if len(name_set) != len(names):
-        spwinfo = {}
-        for i, key in enumerate(names):
-            if key not in spwinfo:
-                spwinfo[key] = f'{i}'
-            else:
-                spwinfo[key] += f',{i}'
-    else:
-        spwinfo = dict(zip(names, map(str, range(len(names)))))
+    ## Cases
+    #if len(name_set) != len(names):
+    #    spwinfo = {}
+    #    for i, key in enumerate(names):
+    #        if key not in spwinfo:
+    #            spwinfo[key] = f'{i}'
+    #        else:
+    #            spwinfo[key] += f',{i}'
+    #else:
+    #    spwinfo = dict(zip(names, map(str, range(len(names)))))
 
-    # Spectral windows indices
-    if spws is not None:
-        spw_ind = list(map(int, spws))
-    else:
-        spw_ind = list(range(len(name_set)))
+    ## Spectral windows indices
+    #if spws is not None:
+    #    spw_ind = list(map(int, spws))
+    #else:
+    #    spw_ind = list(range(len(name_set)))
 
-    return [spw for i, spw in enumerate(spwinfo.values()) if i in spw_ind]
+    #return [spw for i, spw in enumerate(spwinfo.values()) if i in spw_ind]
 
 def get_func_params(func: Callable,
                     config: SectionProxy,
