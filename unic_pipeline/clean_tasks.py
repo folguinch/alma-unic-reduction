@@ -6,7 +6,10 @@ import json
 import os
 import subprocess
 
-from casatasks import tclean
+from astropy.io import fits
+from astropy.stats import mad_std
+from casatasks import tclean, exportfits
+import astropy.units as u
 
 from .common_types import SectionProxy
 from .utils import get_func_params
@@ -48,12 +51,12 @@ def get_tclean_params(
 
     Args:
       config: `ConfigParser` section proxy with input parameters to filter.
-      ignore_keys: optional; tclean parameters to ignore.
-      float_keys: optional; tclean parameters to convert to float.
-      int_keys: optional; tclean parameters to convert to int.
-      bool_keys: optional; tclean parameters to convert to bool.
-      int_list_keys: optional; tclean parameters as list of integers.
-      cfgvars: optional; parameters to replace those in config file.
+      ignore_keys: Optional; `tclean` parameters to ignore.
+      float_keys: Optional; `tclean` parameters to convert to float.
+      int_keys: Optional; `tclean` parameters to convert to int.
+      bool_keys: Optional; `tclean` parameters to convert to bool.
+      int_list_keys: Optional; `tclean` parameters as list of integers.
+      cfgvars: Optional; Parameters to replace those in config file.
     """
     # Get params
     tclean_pars = get_func_params(tclean, config, required_keys=required_keys,
@@ -82,11 +85,11 @@ def tclean_parallel(vis: Path,
     directory where the program is executed.
 
     Args:
-      vis: measurement set.
-      imagename: image file name.
-      nproc: number of processes.
-      tclean_args: other arguments for tclean.
-      log: optional; logging function.
+      vis: Measurement set.
+      imagename: Image file name.
+      nproc: Number of processes.
+      tclean_args: Other arguments for tclean.
+      log: Optional; Logging function.
     """
     if nproc == 1:
         tclean_args.update({'parallel': False})
@@ -115,3 +118,35 @@ def tclean_parallel(vis: Path,
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
         proc.wait()
 
+def auto_thresh(vis: Path,
+                imagename: Path,
+                nproc: int,
+                tclean_args: dict,
+                nsigma: float = 3.,
+                log: Optional['logging.Logger'] = None) -> str:
+    """Find a threshold value from a dirty image.
+
+    Args:
+      vis: Measurement set.
+      imagename: Image file name.
+      nproc: Number of processes.
+      tclean_args: Other arguments for tclean.
+      nsigma: Optional; Threshold level over rms.
+      log: Optional; Logging function.
+    """
+    # Compute dirty
+    clean_args = tclean_args | {'niter': 0}
+    tclean_parallel(vis, imagename.with_name(imagename.stem), nproc, clean_args,
+                    log=log)
+
+    # Export fits
+    exportfits(f'{imagename}', fitsimage=f'{imagename}.fits',
+               overwrite=True)
+    dirty = fits.open(f'{imagename}.fits')[0]
+    data = dirty.data * u.Unit(dirty.header['BUNIT'])
+
+    # Get rms and threshold
+    thresh = nsigma * mad_std(data, ignore_nan=True)
+    thresh = thresh.to(u.mJy/u.beam)
+
+    return f'{thresh.value}{thresh.unit*u.beam}'
