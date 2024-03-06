@@ -89,7 +89,8 @@ def clean_continuum(args: argparse.Namespace):
     robust_values = [-2.0, 0.5, 2.0]
     for data in args.data.values():
         for robust in robust_values:
-            data.array_imaging(nproc=args.nproc[0], robust=robust)
+            data.array_imaging(nproc=args.nproc[0], robust=robust,
+                               export_fits=True)
 
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
@@ -97,7 +98,6 @@ def unic(args: Optional[List] = None) -> None:
     steps = {
         'split': prep_data,
         'dirty_cubes': dirty_cubes,
-        #'get_cont': get_continuum,
         'continuum': continuum,
         'contsub': contsub,
         'combine_arrays': combine_arrays,

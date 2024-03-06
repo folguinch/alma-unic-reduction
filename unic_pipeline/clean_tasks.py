@@ -140,8 +140,12 @@ def auto_thresh(vis: Path,
                     log=log)
 
     # Export fits
-    exportfits(f'{imagename}', fitsimage=f'{imagename}.fits',
-               overwrite=True)
+    if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
+        exportfits(f'{imagename}.tt0', fitsimage=f'{imagename}.fits',
+                   overwrite=True)
+    else:
+        exportfits(f'{imagename}', fitsimage=f'{imagename}.fits',
+                   overwrite=True)
     dirty = fits.open(f'{imagename}.fits')[0]
     data = dirty.data * u.Unit(dirty.header['BUNIT'])
 

@@ -359,6 +359,7 @@ class ArrayHandler:
                    uvtype: str,
                    nproc: int = 5,
                    auto_threshold: bool = False,
+                   export_fits: bool = False,
                    resume: bool = False,
                    **tclean_args):
         """Run tclean on input or stored uvdata.
@@ -372,6 +373,7 @@ class ArrayHandler:
           nproc: Optional; Number of processors for parallel clean.
           auto_threshold: Optional; Calculate threshold from noise in initial
             dirty image?
+          export_fits: Optional; Export image to FITS file?
           resume: Optional; Resume where it was left?
           tclean_args: Optional; Additional arguments for tclean.
         """
@@ -394,9 +396,13 @@ class ArrayHandler:
             kwargs = recommended_auto_masking(self.array) | kwargs
 
         # Check for files
-        if imagename.exists() and resume:
+        if kwargs['deconvolver'] == 'mtmfs':
+            realimage = imagename.with_suffix('.image.tt0')
+        else:
+            realimage = imagename
+        if realimage.exists() and resume:
             return
-        elif imagename.exists() and not resume:
+        elif realimage.exists() and not resume:
             self.log.warning('Deleting image: %s', imagename)
             os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
@@ -410,6 +416,11 @@ class ArrayHandler:
             self.log.info('Automatic threshold: %s', kwargs['threshold'])
         tclean_parallel(uvdata, imagename.with_name(imagename.stem),
                         nproc, kwargs, log=self.log)
+
+        # Export fits?
+        if export_fits:
+            exportfits(imagename=f'{realimage}', fitsimage=f'{realimage}.fits',
+                       overwrite=True)
 
     def clean_per_spw(self,
                       section: str,
@@ -851,6 +862,7 @@ class FieldManager:
                       auto_threshold: bool = False,
                       per_spw: bool = False,
                       get_spectra: bool = False,
+                      export_fits: bool = False,
                       **tclean_args):
         """Image an array.
 
@@ -864,6 +876,7 @@ class FieldManager:
             dirty image?
           per_spw: Optional; Clean each SPW individually?
           get_spectra: Optional; Extract spectra from cubes per SPW?
+          export_fits: Optional; Export image to FITS file?
           tclean_args: Optional; Additional `casatasks.tclean` arguments.
         """
         # Select arrays
@@ -912,7 +925,8 @@ class FieldManager:
                 imagename = outdir / f'{imagename}{suffix}.image'
                 handler.clean_data(section, imagename, uvtype, nproc=nproc,
                                    auto_threshold=auto_threshold,
-                                   resume=self.resume, **tclean_args)
+                                   resume=self.resume, export_fits=export_fits,
+                                   **tclean_args)
             self.log.info('=' * 80)
 
     def contsub_visibilities(self,
@@ -954,7 +968,8 @@ class FieldManager:
         # Make a control image
         if control_image:
             self.array_imaging(outdir=outdir, section='continuum_control',
-                               nproc=nproc, auto_threshold=True)
+                               nproc=nproc, auto_threshold=True,
+                               export_fits=True)
 
     def combine_arrays(self,
                        arrays: Sequence[str],
@@ -1000,7 +1015,8 @@ class FieldManager:
                     self.array_imaging(arrays=[new_array],
                                        section='continuum_control',
                                        auto_threshold=True,
-                                       nproc=nproc)
+                                       nproc=nproc,
+                                       export_fits=True)
 
     def write_configs(self):
         """Write configs to disk."""
