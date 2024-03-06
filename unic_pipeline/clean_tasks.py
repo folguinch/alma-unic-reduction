@@ -140,11 +140,12 @@ def auto_thresh(vis: Path,
                     log=log)
 
     # Export fits
+    fitsimage = f'{imagename}.fits'
     if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
-        exportfits(f'{imagename}.tt0', fitsimage=f'{imagename}.fits',
+        exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
                    overwrite=True)
     else:
-        exportfits(f'{imagename}', fitsimage=f'{imagename}.fits',
+        exportfits(f'{imagename}', fitsimage=f'{fitsimage}',
                    overwrite=True)
     dirty = fits.open(f'{imagename}.fits')[0]
     data = dirty.data * u.Unit(dirty.header['BUNIT'])
@@ -152,5 +153,8 @@ def auto_thresh(vis: Path,
     # Get rms and threshold
     thresh = nsigma * mad_std(data, ignore_nan=True)
     thresh = thresh.to(u.mJy/u.beam)
+
+    # Clean up
+    os.system(f'rm {fitsimage}')
 
     return f'{thresh.value}{thresh.unit*u.beam}'
