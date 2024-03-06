@@ -403,7 +403,7 @@ class ArrayHandler:
         if realimage.exists() and resume:
             return
         elif realimage.exists() and not resume:
-            self.log.warning('Deleting image: %s', imagename)
+            self.log.warning('Deleting image and products: %s', realimage)
             os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
         # Run tclean
@@ -800,59 +800,6 @@ class FieldManager:
             # Update handler spws
             handler.update_spws()
 
-    #def dirty_cubes(self,
-    #                section: str = 'dirty_cubes',
-    #                uvtype: str = '',
-    #                nproc: int = 5,
-    #                arrays: Optional[Sequence[str]] = None,
-    #                outdir: Optional[Path] = None,
-    #                get_spectra: bool = False):
-    #    """Calculate dirty cubes per spw.
-    #    
-    #    The argument `uvtype` is used to determine the uv data file name.
-    #    Available values are `['', 'continuum', 'uvcontsub']` to compute dirty
-    #    images from the calibrated data, continuum data, or continuum
-    #    subtracted data, respectively.
-
-    #    Args:
-    #      section: Optional; Configuration section.
-    #      uvtype: Optional; Type of uvdata to image.
-    #      nproc: Optional; Number of parallel processes.
-    #      arrays: Optional; Array configurations to image.
-    #      outdir: Optional; Output directory.
-    #      get_spectra: Optional; Extract spectra from dirty cubes?
-    #    """
-        # Select arrays
-        #if arrays is None:
-        #    arrays = self.data_handler.keys()
-
-        ## Iterate over selected arrays
-        #for array in arrays:
-        #    # Check input
-        #    handler = self.data_handler[array]
-        #    if outdir is None:
-        #        outdir = handler.uvdata.parent / section
-        #    outdir.mkdir(exist_ok=True)
-
-        #    # Global imaging sizes
-        #    cell = handler.config.get('imaging', 'cell', fallback=None)
-        #    imsize = handler.config.get('imaging', 'imsize', fallback=None)
-        #    if cell is None or imsize is None:
-        #        new_cell, new_imsize = handler.get_image_scales(uvtype=uvtype)
-        #        if cell is None:
-        #            handler.config[section]['cell'] = new_cell
-        #        if imsize is None:
-        #            handler.config[section]['imsize'] = f'{new_imsize}'
-        #        handler.write_config()
-
-        #    # Clean spws
-        #    self.log.info('Computing dirty cubes for array: %s', array)
-        #    handler.clean_per_spw(section, outdir=outdir,
-        #                          nproc=nproc, uvtype=uvtype,
-        #                          get_spectra=get_spectra,
-        #                          resume=self.resume, niter=0)
-        #    print('=' * 80)
-
     def array_imaging(self,
                       arrays: Optional[Sequence[str]] = None,
                       outdir: Optional[Path] = None,
@@ -899,17 +846,6 @@ class FieldManager:
             impars = handler.get_image_scales(uvtype=uvtype)
             tclean_args['cell'] = impars[0]
             tclean_args['imsize'] = impars[1]
-            #tclean_args['cell'] = handler.config.get('imaging', 'cell',
-            #                                         fallback=None)
-            #tclean_args['imsize'] = handler.config.get('imaging', 'imsize',
-            #                                           fallback=None)
-            #if tclean_args['cell'] is None or tclean_args['imsize'] is None:
-            #    impars = handler.get_image_scales(uvtype=uvtype)
-            #    if tclean_args['cell'] is None:
-            #        tclean_args['cell'] = impars[0]
-            #    if tclean_args['imsize'] is None:
-            #        tclean_args['imsize'] = f'{impars[1]}'
-            #    handler.write_config()
 
             # Clean cases
             if per_spw:
