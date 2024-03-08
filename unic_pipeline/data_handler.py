@@ -18,6 +18,7 @@ from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     flags_from_cont_ranges, clumps_to_casa)
 from .clean_tasks import (get_tclean_params, tclean_parallel,
                           recommended_auto_masking, auto_thresh)
+from .plotting import plot_imaging_products
 from .spectrum_tools import extract_spectrum, plot_spectral_selection
 
 def new_array_dict(arrays: Sequence = ('12m', '7m')):
@@ -361,6 +362,7 @@ class ArrayHandler:
                    auto_threshold: bool = False,
                    export_fits: bool = False,
                    resume: bool = False,
+                   plot_results: bool = False,
                    **tclean_args):
         """Run tclean on input or stored uvdata.
 
@@ -375,6 +377,7 @@ class ArrayHandler:
             dirty image?
           export_fits: Optional; Export image to FITS file?
           resume: Optional; Resume where it was left?
+          plot_results: Optional; plot image, residual and masks?
           tclean_args: Optional; Additional arguments for tclean.
         """
         # tclean args
@@ -408,19 +411,34 @@ class ArrayHandler:
 
         # Run tclean
         uvdata = self.get_uvname(uvtype)
-        if auto_threshold:
+        if auto_threshold and 'threshold' not in kwargs:
+            nsigma = config.getfloat('thresh_nsigma', fallback=3.)
+            self.log.info('Cleaning down to %f sigma', nsigma)
             kwargs['threshold'] = auto_thresh(uvdata, imagename, nproc,
-                                              kwargs, log=self.log)
+                                              kwargs, nsigma=nsigma,
+                                              log=self.log)
             kwargs['calcpsf'] = False
             kwargs['calcres'] = False
             self.log.info('Automatic threshold: %s', kwargs['threshold'])
+            self.update_config(write=True,
+                               **{section: {'threshold': kwargs['threshold']}})
         tclean_parallel(uvdata, imagename.with_name(imagename.stem),
                         nproc, kwargs, log=self.log)
 
         # Export fits?
         if export_fits:
-            exportfits(imagename=f'{realimage}', fitsimage=f'{realimage}.fits',
+            fitsimage = f'{realimage}.fits'
+            exportfits(imagename=f'{realimage}', fitsimage=f'{fitsimage}',
                        overwrite=True)
+
+        # Plot images
+        if plot_results:
+            outdir = self.uvcontsub.parent / 'plots'
+            outdir.mkdir(exist_ok=True)
+            plotname = imagename.with_suffix(f'.{section}.results.png')
+            plotname = outdir / plotname.name
+            plot_imaging_products(imagename, plotname, kwargs['deconvolver'],
+                                  kwargs['usemask'])
 
     def clean_per_spw(self,
                       section: str,
@@ -455,6 +473,8 @@ class ArrayHandler:
                                   f'{suffix}.image')
 
             # Check for files
+            self.log.info('.' * 80)
+            self.log.info('Cleaning SPW: %i (%s)', i, spw)
             trigger = True
             if imagename.exists() and resume:
                 self.log.info('Skipping cube for spw %i', i)
@@ -463,26 +483,10 @@ class ArrayHandler:
                 self.log.warning('Deleting cubes for spw %i', i)
                 os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
-            # Parameters
-            #cell = self.config.get(section, 'cell', vars=tclean_args,
-            #                       fallback=None)
-            #imsize = self.config.get(section, 'imsize', vars=tclean_args,
-            #                         fallback=None)
-            #impars = {}
-            #if cell is None or imsize is None:
-            #    self.log.info('Determining imaging parameter from MS')
-            #    new_cell, new_imsize = self.get_image_scales(spw=i,
-            #                                                 uvtype=uvtype)
-            #    if cell is None:
-            #        impars['cell'] = new_cell
-            #    if imsize is None:
-            #        impars['imsize'] = f'{new_imsize}'
-
             # Run clean
-            #self.log.debug('Imaging parameters: %s', impars)
             if trigger:
                 self.clean_data(section, imagename, uvtype, nproc=nproc,
-                                resume=resume, spw=spw, **tclean_args)#, **impars)
+                                resume=resume, spw=spw, **tclean_args)
             imagenames.append(imagename)
 
             # Extract spectrum
@@ -493,7 +497,6 @@ class ArrayHandler:
                     exportfits(imagename=f'{imagename}',
                                fitsimage=f'{fitsimage}')
                 self.spectra.append(extract_spectrum(fitsimage))
-            self.log.info('-' * 80)
 
         return imagenames
 
@@ -565,24 +568,31 @@ class ArrayHandler:
         val_lf = validate_step(resume, linefree, log=self.log.warning)
 
         # Values from config
-        width = self.config.get(section, 'width', fallback=None)
+        width = self.config.get(section, 'split_width', fallback=None)
         if width is not None:
             width = list(map(int, width.split(',')))
         else:
-            width = continuum_bins(self.uvdata, u.Quantity(self.array))
-            self.config[section]['width'] = ','.join(map(str, width))
+            width = continuum_bins(self.uvdata, u.Quantity(self.array),
+                                   log=self.log.info)
+            self.config[section]['split_width'] = ','.join(map(str, width))
             self.write_config()
         self.log.info('Continuum bins: %s', width)
         datacolumn = self.config.get(section, 'datacolumn', fallback='data')
 
+        # Split continuum unflagged
         if val_all:
             # Average channels without flagging
+            self.log.info('Calculating unflagged binned continuum')
             split_ms(vis=f'{self.uvdata}', outputvis=f'{allchans}', width=width,
                      datacolumn=datacolumn)
+            self.log.info('-' * 80)
+
+        # Split continuum
         if val_lf:
             # Get line free channels
             suffix = self.get_uvsuffix('continuum')
             mask_borders = self.config.getboolean(section, 'mask_borders')
+            self.log.info('Obtaining line flags')
             flag_chans = self.get_spectral_ranges(suffix,
                                                   mask_borders=mask_borders,
                                                   resume=resume)
@@ -601,12 +611,15 @@ class ArrayHandler:
             # Split the uvdata
             # WARNING: this needs to be tested
             # otherwise, use flagmanager and then split the visibilities
+            self.log.info('Flagging data')
             flagmanager(vis=f'{self.uvdata}', mode='save',
                         versionname='before_cont_flags')
             flagdata(vis=f'{self.uvdata}', mode='manual', spw=casa_flag_chans,
                      flagbackup=False)
+            self.log.info('Splitting binned continuum')
             split_ms(vis=f'{self.uvdata}', outputvis=f'{linefree}',
                      width=width, datacolumn=datacolumn)
+            self.log.info('Restoring flags')
             flagmanager(vis=f'{self.uvdata}', mode='restore',
                         versionname='before_cont_flags')
 
@@ -810,6 +823,7 @@ class FieldManager:
                       per_spw: bool = False,
                       get_spectra: bool = False,
                       export_fits: bool = False,
+                      plot_results: bool = False,
                       **tclean_args):
         """Image an array.
 
@@ -824,6 +838,7 @@ class FieldManager:
           per_spw: Optional; Clean each SPW individually?
           get_spectra: Optional; Extract spectra from cubes per SPW?
           export_fits: Optional; Export image to FITS file?
+          plot_results: Optional; plot image, residual and masks?
           tclean_args: Optional; Additional `casatasks.tclean` arguments.
         """
         # Select arrays
@@ -841,6 +856,8 @@ class FieldManager:
             if outdir is None:
                 outdir = handler.uvdata.parent / section
             outdir.mkdir(exist_ok=True)
+            self.log.info('-' * 80)
+            self.log.info('Cleaning array: %s', array)
 
             # Fill tclean parameters
             impars = handler.get_image_scales(uvtype=uvtype)
@@ -862,8 +879,8 @@ class FieldManager:
                 handler.clean_data(section, imagename, uvtype, nproc=nproc,
                                    auto_threshold=auto_threshold,
                                    resume=self.resume, export_fits=export_fits,
+                                   plot_results=plot_results,
                                    **tclean_args)
-            self.log.info('=' * 80)
 
     def contsub_visibilities(self,
                              dirty_images: bool = False,
@@ -879,9 +896,12 @@ class FieldManager:
         for array, handler in self.data_handler.items():
             self.log.info('Computing contsub visibilities for array: %s', array)
             handler.contsub(resume=self.resume, plot_selection=True)
+            self.log.info('-' * 80)
+        self.log.info('=' * 80)
 
         # Compute dirty
         if dirty_images:
+            self.log.info('Producing dirty images for contsub')
             self.array_imaging(uvtype='uvcontsub', nproc=nproc,
                                section='dirty_cubes', per_spw=True,
                                get_spectra=get_spectra, niter=0)
@@ -900,12 +920,15 @@ class FieldManager:
         for array, handler in self.data_handler.items():
             self.log.info('Computing cont visibilities for array: %s', array)
             handler.continuum_vis(resume=self.resume, plot_selection=True)
+            self.log.info('-' * 80)
+        self.log.info('=' * 80)
 
         # Make a control image
         if control_image:
+            self.log.info('Producing control images for continuum')
             self.array_imaging(outdir=outdir, section='continuum_control',
                                nproc=nproc, auto_threshold=True,
-                               export_fits=True)
+                               export_fits=True, plot_results=True)
 
     def combine_arrays(self,
                        arrays: Sequence[str],
@@ -992,7 +1015,7 @@ class DataManager(Dict):
         # First pass: iterate over uvdata and define fields
         fields = {}
         for i, ms in enumerate(uvdata):
-            print('=' * 80)
+            log.info('=' * 80)
             log.info('Operating over MS: %s', ms)
             targets = get_targets(ms)
             log.info('Fields in MS: %s', targets)
@@ -1008,7 +1031,7 @@ class DataManager(Dict):
 
             # Iterate over fields
             for field in targets:
-                print('-' * 80)
+                log.info('-' * 80)
                 if field in fields:
                     log.info('Updating field: %s', field)
                     fields[field].append_data(ms,
@@ -1029,7 +1052,7 @@ class DataManager(Dict):
         # Second pass: iterate over fields to concatenate data and save config
         # files
         for name, field in fields.items():
-            print('=' * 80)
+            log.info('=' * 80)
             log.info('Concatenating field: %s', name)
             field.concat_data()
             log.info('Writing configs')
