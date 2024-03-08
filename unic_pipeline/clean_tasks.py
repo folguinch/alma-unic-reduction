@@ -140,9 +140,14 @@ def auto_thresh(vis: Path,
                     log=log)
 
     # Export fits
-    exportfits(f'{imagename}', fitsimage=f'{imagename}.fits',
-               overwrite=True)
-    dirty = fits.open(f'{imagename}.fits')[0]
+    fitsimage = f"{imagename}_niter{clean_args['niter']}.fits"
+    if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
+        exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
+                   overwrite=True)
+    else:
+        exportfits(f'{imagename}', fitsimage=f'{fitsimage}',
+                   overwrite=True)
+    dirty = fits.open(fitsimage)[0]
     data = dirty.data * u.Unit(dirty.header['BUNIT'])
 
     # Get rms and threshold

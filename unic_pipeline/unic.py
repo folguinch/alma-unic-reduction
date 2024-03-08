@@ -86,10 +86,16 @@ def combine_arrays(args: argparse.Namespace):
 
 def clean_continuum(args: argparse.Namespace):
     """Clean continuum for different robust and arrays."""
-    robust_values = [-2.0, 0.5, 2.0]
+    #robust_values = [-2.0, 0.5, 2.0]
+    robust_values = [0.5]
     for data in args.data.values():
         for robust in robust_values:
-            data.array_imaging(nproc=args.nproc[0], robust=robust)
+            # Clean data
+            data.array_imaging(nproc=args.nproc[0], robust=robust,
+                               auto_threshold=True,
+                               export_fits=True, plot_results=True)
+
+            # Plot comparison with control image
 
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
@@ -97,7 +103,6 @@ def unic(args: Optional[List] = None) -> None:
     steps = {
         'split': prep_data,
         'dirty_cubes': dirty_cubes,
-        #'get_cont': get_continuum,
         'continuum': continuum,
         'contsub': contsub,
         'combine_arrays': combine_arrays,
@@ -156,12 +161,15 @@ def unic(args: Optional[List] = None) -> None:
 
     # Run through steps
     for step_name, step in steps.items():
+        args.log.info('*' * 80)
         if step_name in args.skip:
             args.log.warning('Skipping step: %s', step_name)
             if step_name not in ['split']:
+                args.log.info('*' * 80)
                 continue
         else:
             args.log.info('Running step: %s', step_name)
+        args.log.info('*' * 80)
         # Each step has to be run either way to store data directories and
         # other data needed in subsequent steps
         step(args)

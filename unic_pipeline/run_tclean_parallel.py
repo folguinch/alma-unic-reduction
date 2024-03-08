@@ -26,7 +26,8 @@ def main(args: list):
 
     # Run tclean
     # pylint: disable=E0602
-    tclean(vis=args.uvdata[0], imagename=args.imagename[0], **tclean_params)
+    summary = tclean(vis=args.uvdata[0], imagename=args.imagename[0], **tclean_params)
+    casalog.post('tclean summary: %s' % summary, 'INFO')
 
     # Unset variable
     if tclean_params.get('usemask', '') == 'auto-multithresh':
