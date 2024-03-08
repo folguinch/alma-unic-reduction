@@ -147,7 +147,8 @@ def max_chan_width(freq: u.Quantity,
     return chan_width.to(u.MHz)
 
 def continuum_bins(uvdata: 'pathlib.Path',
-                   diameter: u.Quantity) -> Sequence[int]:
+                   diameter: u.Quantity,
+                   log: Callable = print) -> Sequence[int]:
     """Find the maximum continuum bin sizes."""
     metadata = get_metadata(uvdata)
     bandwidths = metadata.bandwidths()
@@ -156,13 +157,21 @@ def continuum_bins(uvdata: 'pathlib.Path',
         low_freq, _, baseline = extrema_ms(uvdata, spw=i)
         max_width = max_chan_width(low_freq, diameter, baseline)
         ngroups = bandwidths[i] * u.Hz / max_width
-        ngroups = int(ngroups.to(1))
+        ngroups = int(np.ceil(ngroups.to(1).value))
         if ngroups <= 1:
             binsize = metadata.nchan(i)
         else:
             ngroups, binsize = find_near_exact_denominator(metadata.nchan(i),
                                                            ngroups)
         bins.append(binsize)
+
+        # Log results
+        log(f'SPW: {i}')
+        log(f'Lowest frequency: {low_freq}')
+        log(f'Longest baseline: {baseline}')
+        log(f'Maximum bin width: {max_width.to(u.MHz)}')
+        log((f'Bandwidth: {bandwidths[i]/1E6} MHz '
+             f'({ngroups} of {binsize} channels)'))
     metadata.close()
 
     return bins
