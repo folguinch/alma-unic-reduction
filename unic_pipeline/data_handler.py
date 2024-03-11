@@ -228,6 +228,34 @@ class ArrayHandler:
             suffix = ''
         return suffix
 
+    def get_imagename(self,
+                      uvtype: str,
+                      outdir: Optional[Path] = None,
+                      section: Optional[str] = None,
+                      **suffixes) -> Path:
+        """Generate an image name for intent."""
+        # Set and create output directory
+        if outdir is None:
+            if section is not None:
+                outdir = self.uvdata / section
+                outdir.mkdir(exist_ok=True)
+            else:
+                outdir = Path('./')
+        else:
+            outdir.mkdir(exist_ok=True)
+
+        # Obtain additional suffixes
+        suffix = self.get_uvsuffix(uvtype)
+        aux = '_'.join(f'{k}{v}' for k, v in suffixes.items())
+
+        # Generate name path
+        imagename = f'{self.name}_{self.array}'
+        if len(aux) != 0:
+            imagename = f'{imagename}_{aux}'
+        imagename = outdir / f'{imagename}{suffix}.image'
+
+        return imagename
+
     def _cont_from_file(self) -> Dict[int, List[str]]:
         """Read continuum ranges from `cont_file`."""
         # Read file
@@ -356,8 +384,8 @@ class ArrayHandler:
 
     def clean_data(self,
                    section: str,
-                   imagename: Path,
                    uvtype: str,
+                   imagename: Optional[Path] = None,
                    nproc: int = 5,
                    auto_threshold: bool = False,
                    export_fits: bool = False,
@@ -370,8 +398,8 @@ class ArrayHandler:
 
         Args:
           section: Configuration section.
-          imagename: Image directory path.
           uvtype: Type of uvdata to clean.
+          imagename: Optional; Image directory path.
           nproc: Optional; Number of processors for parallel clean.
           auto_threshold: Optional; Calculate threshold from noise in initial
             dirty image?
@@ -393,6 +421,11 @@ class ArrayHandler:
         kwargs.setdefault('robust', 0.5)
         kwargs.setdefault('gridder', 'standard')
         kwargs.setdefault('niter', 100000)
+
+        # Set imagename
+        if imagename is None:
+            imagename = self.get_imagename(uvtype, section=section,
+                                           robust=kwargs['robust'])
 
         # Masking
         if kwargs.get('usemask', '') == 'auto-multithresh':
@@ -442,7 +475,7 @@ class ArrayHandler:
 
     def clean_per_spw(self,
                       section: str,
-                      outdir: Path = Path('./'),
+                      outdir: Optional[Path] = None,
                       uvtype: str = '',
                       nproc: int = 5,
                       resume: bool = False,
@@ -454,7 +487,7 @@ class ArrayHandler:
 
         Args:
           section: Configuration section.
-          outdir: Output directory path.
+          outdir: Optional; Output directory path.
           uvtype: Optional; Type of uvdata to clean.
           nproc: Optional; Number of processors for parallel clean.
           resume: Optional; Resume where it was left?
@@ -468,9 +501,14 @@ class ArrayHandler:
         imagenames = []
         for i, spw in enumerate(self.spws):
             # Clean args
-            suffix = self.get_uvsuffix(uvtype)
-            imagename = outdir / (f'{self.name}_{self.array}_spw{i}'
-                                  f'{suffix}.image')
+            robust = self.config.get(section, 'robust',
+                                     vars=tclean_args, fallback=0.5)
+            imagename = self.get_imagename(uvtype, outdir=outdir,
+                                           section=section, spw=spw,
+                                           robust=robust)
+            #suffix = self.get_uvsuffix(uvtype)
+            #imagename = outdir / (f'{self.name}_{self.array}_spw{i}'
+            #                      f'{suffix}.image')
 
             # Check for files
             self.log.info('.' * 80)
@@ -485,8 +523,9 @@ class ArrayHandler:
 
             # Run clean
             if trigger:
-                self.clean_data(section, imagename, uvtype, nproc=nproc,
-                                resume=resume, spw=spw, **tclean_args)
+                self.clean_data(section, uvtype, imagename=imagename,
+                                nproc=nproc, resume=resume, spw=spw,
+                                **tclean_args)
             imagenames.append(imagename)
 
             # Extract spectrum
@@ -814,31 +853,33 @@ class FieldManager:
             handler.update_spws()
 
     def array_imaging(self,
+                      section: str,
+                      uvtype: str,
                       arrays: Optional[Sequence[str]] = None,
                       outdir: Optional[Path] = None,
-                      section: str = 'continuum',
-                      uvtype: str = 'continuum',
                       nproc: int = 5,
                       auto_threshold: bool = False,
                       per_spw: bool = False,
                       get_spectra: bool = False,
                       export_fits: bool = False,
                       plot_results: bool = False,
+                      compare_to: Optional[str] = None,
                       **tclean_args):
         """Image an array.
 
         Args:
+          section: Configuration section with `tclean` parameters.
+          uvtype: Type of uv data to clean.
           arrays: Optional; Array to image.
-          outdirs: Optional; Output directory.
-          section: Optional; Configuration section with `tclean` parameters.
-          uvtype: Optional; Type of uv data to clean.
+          outdir: Optional; Output directory.
           nproc: Optional; Number of parallel processes for cleaning.
           auto_threshold: Optional; Calculate threshold from noise in initial
             dirty image?
           per_spw: Optional; Clean each SPW individually?
           get_spectra: Optional; Extract spectra from cubes per SPW?
           export_fits: Optional; Export image to FITS file?
-          plot_results: Optional; plot image, residual and masks?
+          plot_results: Optional; Plot image, residual and masks?
+          compare_to: Optional; Compare image with this execution?
           tclean_args: Optional; Additional `casatasks.tclean` arguments.
         """
         # Select arrays
@@ -853,9 +894,6 @@ class FieldManager:
             if array == '7m12m' and not handler.get_uvname(uvtype).exists():
                 self.log.info('Skipping imaging for %s', array)
                 continue
-            if outdir is None:
-                outdir = handler.uvdata.parent / section
-            outdir.mkdir(exist_ok=True)
             self.log.info('-' * 80)
             self.log.info('Cleaning array: %s', array)
 
@@ -871,16 +909,22 @@ class FieldManager:
                                       get_spectra=get_spectra,
                                       resume=self.resume, **tclean_args)
             else:
-                suffix = handler.get_uvsuffix(uvtype)
-                robust = handler.config.get(section, 'robust',
-                                            vars=tclean_args, fallback=0.5)
-                imagename = f'{handler.name}_{array}_robust{robust}'
-                imagename = outdir / f'{imagename}{suffix}.image'
-                handler.clean_data(section, imagename, uvtype, nproc=nproc,
+                #suffix = handler.get_uvsuffix(uvtype)
+                #robust = handler.config.get(section, 'robust',
+                #                            vars=tclean_args, fallback=0.5)
+                #imagename = f'{handler.name}_{array}_robust{robust}'
+                #imagename = outdir / f'{imagename}{suffix}.image'
+                handler.clean_data(section,
+                                   uvtype,
+                                   nproc=nproc,
                                    auto_threshold=auto_threshold,
-                                   resume=self.resume, export_fits=export_fits,
+                                   resume=self.resume,
+                                   export_fits=export_fits,
                                    plot_results=plot_results,
                                    **tclean_args)
+
+                if compare_to:
+                    self.log.warning('Not implemented yet')
 
     def contsub_visibilities(self,
                              dirty_images: bool = False,
@@ -902,9 +946,8 @@ class FieldManager:
         # Compute dirty
         if dirty_images:
             self.log.info('Producing dirty images for contsub')
-            self.array_imaging(uvtype='uvcontsub', nproc=nproc,
-                               section='dirty_cubes', per_spw=True,
-                               get_spectra=get_spectra, niter=0)
+            self.array_imaging('dirty_cubes', 'uvcontsub', nproc=nproc,
+                               per_spw=True, get_spectra=get_spectra, niter=0)
 
     def continuum_visibilities(self,
                                control_image: bool = False,
@@ -926,7 +969,7 @@ class FieldManager:
         # Make a control image
         if control_image:
             self.log.info('Producing control images for continuum')
-            self.array_imaging(outdir=outdir, section='continuum_control',
+            self.array_imaging('continuum_control', 'continuum', outdir=outdir,
                                nproc=nproc, auto_threshold=True,
                                export_fits=True, plot_results=True)
 
@@ -967,12 +1010,16 @@ class FieldManager:
             # Control images
             if control_images:
                 if uvtype == 'uvcontsub':
-                    self.array_imaging(arrays=[new_array], uvtype=uvtype,
-                                       section='dirty_cubes', per_spw=True,
-                                       nproc=nproc, niter=0)
+                    self.array_imaging('dirty_cubes',
+                                       uvtype,
+                                       arrays=[new_array],
+                                       per_spw=True,
+                                       nproc=nproc,
+                                       niter=0)
                 elif uvtype == 'continuum':
-                    self.array_imaging(arrays=[new_array],
-                                       section='continuum_control',
+                    self.array_imaging('continuum_control',
+                                       uvtype,
+                                       arrays=[new_array],
                                        auto_threshold=True,
                                        nproc=nproc,
                                        export_fits=True)

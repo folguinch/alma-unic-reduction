@@ -60,9 +60,8 @@ def prep_data(args: argparse.Namespace) -> None:
 def dirty_cubes(args: argparse.Namespace):
     """Calculate dirty cubes."""
     for data in args.data.values():
-        data.array_imaging(section='dirty_cubes', uvtype='',
-                           nproc=args.nproc[0], per_spw=True, get_spectra=True,
-                           niter=0)
+        data.array_imaging('dirty_cubes', '', nproc=args.nproc[0],
+                           per_spw=True, get_spectra=True, niter=0)
 
 def continuum(args: argparse.Namespace):
     """Calculate and image the continuum visibilities."""
@@ -91,11 +90,18 @@ def clean_continuum(args: argparse.Namespace):
     for data in args.data.values():
         for robust in robust_values:
             # Clean data
-            data.array_imaging(nproc=args.nproc[0], robust=robust,
+            if robust == 0.5:
+                compare_to = 'continuum_control'
+            else:
+                compare_to = None
+            data.array_imaging('continuum',
+                               'continuum',
+                               nproc=args.nproc[0],
                                auto_threshold=True,
-                               export_fits=True, plot_results=True)
-
-            # Plot comparison with control image
+                               export_fits=True,
+                               plot_results=True,
+                               compare_to=compare_to,
+                               robust=robust)
 
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
