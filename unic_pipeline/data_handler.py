@@ -18,7 +18,7 @@ from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     flags_from_cont_ranges, clumps_to_casa)
 from .clean_tasks import (get_tclean_params, tclean_parallel,
                           recommended_auto_masking, auto_thresh)
-from .plotting import plot_imaging_products
+from .plotting import plot_imaging_products, plot_comparison
 from .spectrum_tools import extract_spectrum, plot_spectral_selection
 
 def new_array_dict(arrays: Sequence = ('12m', '7m')):
@@ -233,7 +233,14 @@ class ArrayHandler:
                       outdir: Optional[Path] = None,
                       section: Optional[str] = None,
                       **suffixes) -> Path:
-        """Generate an image name for intent."""
+        """Generate an image name for intent.
+        
+        Args:
+          uvtype: Type of uv data.
+          outdir: Optional; Output directory.
+          section: Optional; Config section of the image.
+          suffixes: Optional; Additional `key_value` for file name.
+        """
         # Set and create output directory
         if outdir is None:
             if section is not None:
@@ -391,7 +398,7 @@ class ArrayHandler:
                    export_fits: bool = False,
                    resume: bool = False,
                    plot_results: bool = False,
-                   **tclean_args):
+                   **tclean_args) -> Path:
         """Run tclean on input or stored uvdata.
 
         Arguments given under `tclean_args` replace the values from `config`.
@@ -407,6 +414,9 @@ class ArrayHandler:
           resume: Optional; Resume where it was left?
           plot_results: Optional; plot image, residual and masks?
           tclean_args: Optional; Additional arguments for tclean.
+
+        Returns:
+          The image file name.
         """
         # tclean args
         config = self.config[section]
@@ -437,7 +447,8 @@ class ArrayHandler:
         else:
             realimage = imagename
         if realimage.exists() and resume:
-            return
+            self.log.info('%s %s already cleaned', self.array, section)
+            return realimage
         elif realimage.exists() and not resume:
             self.log.warning('Deleting image and products: %s', realimage)
             os.system(f"rm -rf {imagename.with_suffix('.*')}")
@@ -461,17 +472,19 @@ class ArrayHandler:
         # Export fits?
         if export_fits:
             fitsimage = f'{realimage}.fits'
-            exportfits(imagename=f'{realimage}', fitsimage=f'{fitsimage}',
+            exportfits(imagename=f'{realimage}', fitsimage=fitsimage,
                        overwrite=True)
 
         # Plot images
         if plot_results:
-            outdir = self.uvcontsub.parent / 'plots'
+            outdir = self.uvdata.parent / 'plots'
             outdir.mkdir(exist_ok=True)
             plotname = imagename.with_suffix(f'.{section}.results.png')
             plotname = outdir / plotname.name
             plot_imaging_products(imagename, plotname, kwargs['deconvolver'],
                                   kwargs['usemask'])
+        
+        return realimage
 
     def clean_per_spw(self,
                       section: str,
@@ -914,17 +927,29 @@ class FieldManager:
                 #                            vars=tclean_args, fallback=0.5)
                 #imagename = f'{handler.name}_{array}_robust{robust}'
                 #imagename = outdir / f'{imagename}{suffix}.image'
-                handler.clean_data(section,
-                                   uvtype,
-                                   nproc=nproc,
-                                   auto_threshold=auto_threshold,
-                                   resume=self.resume,
-                                   export_fits=export_fits,
-                                   plot_results=plot_results,
-                                   **tclean_args)
+                imagename = handler.clean_data(section,
+                                               uvtype,
+                                               nproc=nproc,
+                                               auto_threshold=auto_threshold,
+                                               resume=self.resume,
+                                               export_fits=export_fits,
+                                               plot_results=plot_results,
+                                               **tclean_args)
 
-                if compare_to:
-                    self.log.warning('Not implemented yet')
+                if compare_to is not None:
+                    self.log.info('Plotting comparison between %s and %s',
+                                  section, compare_to)
+                    if (robust:=tclean_args.get('robust')) is not None:
+                        comp_image = handler.get_imagename(uvtype,
+                                                           section=compare_to,
+                                                           robust=robust)
+                    else:
+                        raise ValueError('Robust parameter needed for name')
+                    plotname = imagename.with_suffix((f'.{section}'
+                                                      f'.compare_{compare_to}'
+                                                      '.png'))
+                    plotname = handler.uvdata.parent / 'plots' / plotname.name
+                    plot_comparison(comp_image, imagename, plotname)
 
     def contsub_visibilities(self,
                              dirty_images: bool = False,
