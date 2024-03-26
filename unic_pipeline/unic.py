@@ -85,8 +85,8 @@ def combine_arrays(args: argparse.Namespace):
 
 def clean_continuum(args: argparse.Namespace):
     """Clean continuum for different robust and arrays."""
-    #robust_values = [-2.0, 0.5, 2.0]
-    robust_values = [0.5]
+    robust_values = [-2.0, 0.5, 2.0]
+    #robust_values = [0.5]
     for data in args.data.values():
         for robust in robust_values:
             # Clean data
@@ -103,6 +103,18 @@ def clean_continuum(args: argparse.Namespace):
                                compare_to=compare_to,
                                robust=robust)
 
+def clean_cubes(args: argparse.Namespace):
+    """Clean continuum for different robust and arrays."""
+    for data in args.data.values():
+        data.array_imaging('clean_cubes',
+                           'uvcontsub',
+                           nproc=args.nproc[0],
+                           auto_threshold=True,
+                           export_fits=True,
+                           per_spw=True,
+                           plot_results=True,
+                           )
+
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
     # Pipeline steps and functions
@@ -113,7 +125,7 @@ def unic(args: Optional[List] = None) -> None:
         'contsub': contsub,
         'combine_arrays': combine_arrays,
         'clean_cont': clean_continuum,
-        #'clean_cubes': clean_cubes,
+        'clean_cubes': clean_cubes,
     }
 
     # Default config
