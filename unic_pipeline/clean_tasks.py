@@ -1,5 +1,5 @@
 """Tools for running the `tclean` CASA task."""
-from typing import Sequence, Optional, Dict
+from typing import Sequence, Optional, Dict, Tuple
 from datetime import datetime
 from pathlib import Path
 import json
@@ -12,7 +12,7 @@ from casatasks import tclean, exportfits
 import astropy.units as u
 
 from .common_types import SectionProxy
-from .utils import get_func_params
+from .utils import get_func_params, round_sigfig
 
 def recommended_auto_masking(array: str) -> Dict:
     """Recommended auto-masking values per array.
@@ -122,7 +122,9 @@ def auto_thresh(vis: Path,
                 imagename: Path,
                 nproc: int,
                 tclean_args: dict,
-                nsigma: float = 3.,
+                thresh_niter: int = 2,
+                nsigma: Tuple[float] = (3.,),
+                sigfig: int = 3,
                 log: Optional['logging.Logger'] = None) -> str:
     """Find a threshold value from a dirty image.
 
@@ -132,26 +134,42 @@ def auto_thresh(vis: Path,
       nproc: Number of processes.
       tclean_args: Other arguments for tclean.
       nsigma: Optional; Threshold level over rms.
+      sigfig: Optional; Number of significant figures.
       log: Optional; Logging function.
     """
-    # Compute dirty
-    clean_args = tclean_args | {'niter': 0}
-    tclean_parallel(vis, imagename.with_name(imagename.stem), nproc, clean_args,
-                    log=log)
+    thresh = None
+    for niter in range(thresh_niter):
+        if thresh is None:
+            # Compute dirty
+            clean_args = tclean_args | {'niter': 0}
+        else:
+            if log is not None:
+                log.info(f'Iteration %i threshold: %s', niter, thresh)
+            clean_args = {'niter': tclean_args.get('niter', 100000),
+                          'threshold': f'{thresh.value}{thresh.unit*u.beam}',
+                          'calcpsf': False,
+                          'calcres': False,}
+            clean_args = tclean_args | clean_args
+        tclean_parallel(vis, imagename.with_name(imagename.stem), nproc,
+                        clean_args, log=log)
 
-    # Export fits
-    fitsimage = f"{imagename}_niter{clean_args['niter']}.fits"
-    if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
-        exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
-                   overwrite=True)
-    else:
-        exportfits(f'{imagename}', fitsimage=f'{fitsimage}',
-                   overwrite=True)
-    dirty = fits.open(fitsimage)[0]
-    data = dirty.data * u.Unit(dirty.header['BUNIT'])
+        # Export fits
+        fitsimage = f"{imagename}_niter{niter}.fits"
+        if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
+            exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
+                    overwrite=True)
+        else:
+            exportfits(f'{imagename}', fitsimage=f'{fitsimage}',
+                    overwrite=True)
+        image = fits.open(fitsimage)[0]
+        data = image.data * u.Unit(image.header['BUNIT'])
 
-    # Get rms and threshold
-    thresh = nsigma * mad_std(data, ignore_nan=True)
-    thresh = thresh.to(u.mJy/u.beam)
+        # Get rms and threshold
+        if len(nsigma) == 1:
+            nrms = nsigma[0]
+        else:
+            nrms = nsigma[niter]
+        thresh = nrms * mad_std(data, ignore_nan=True)
+        thresh = round_sigfig(thresh.to(u.mJy/u.beam), sigfig)
 
     return f'{thresh.value}{thresh.unit*u.beam}'
