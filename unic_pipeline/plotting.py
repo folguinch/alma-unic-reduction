@@ -23,6 +23,8 @@ def plot_imaging_products(imagename: 'pathlib.Path',
     imtypes = ('.image', '.residual')
     if mask_type == 'auto-multithresh':
         imtypes += ('.autothresh1', '.mask')
+    elif mask_type == 'user':
+        imtypes += ('.mask',)
 
     # Determine additional suffix
     suffix = ''

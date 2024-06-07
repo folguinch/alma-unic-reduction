@@ -17,7 +17,8 @@ from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
                     flags_from_cont_ranges, clumps_to_casa)
 from .clean_tasks import (get_tclean_params, tclean_parallel,
-                          recommended_auto_masking, auto_thresh)
+                          recommended_auto_masking, auto_thresh_clean,
+                          cube_multi_clean, cube_multi_images)
 from .plotting import (plot_imaging_products, plot_comparison,
                        plot_imaging_spectra)
 from .spectrum_tools import extract_spectrum, plot_spectral_selection
@@ -398,6 +399,7 @@ class ArrayHandler:
                    auto_threshold: bool = False,
                    export_fits: bool = False,
                    resume: bool = False,
+                   threshold_opt: Optional[str] = None,
                    plot_results: bool = False,
                    **tclean_args) -> Path:
         """Run tclean on input or stored uvdata.
@@ -413,6 +415,7 @@ class ArrayHandler:
             dirty image?
           export_fits: Optional; Export image to FITS file?
           resume: Optional; Resume where it was left?
+          threshold_opt: Optional; Threshold config option for resume.
           plot_results: Optional; plot image, residual and masks?
           tclean_args: Optional; Additional arguments for tclean.
 
@@ -436,6 +439,16 @@ class ArrayHandler:
         kwargs.setdefault('gridder', 'standard')
         kwargs.setdefault('niter', 100000)
 
+        # Recover threshold 
+        if threshold_opt is None:
+            if 'threshold' in kwargs:
+                threshold_opt = 'threshold'
+            else:
+                threshold_opt = f"threshold_robust{kwargs['robust']}"
+        if threshold_opt in config:
+            self.log.info('Recovering threshold from %s in config', threshold_opt)
+            kwargs['threshold'] = config[threshold_opt]
+
         # Set imagename
         if imagename is None:
             imagename = self.get_imagename(uvtype, section=section,
@@ -449,14 +462,24 @@ class ArrayHandler:
         do_clean = True
         if kwargs['deconvolver'] == 'mtmfs':
             realimage = imagename.with_suffix('.image.tt0')
+        elif (kwargs['specmode'] == 'cube' and
+              config.getboolean('use_multi_clean')):
+            _, realimage = cube_multi_images(imagename)
+            kwargs['usemask'] = 'user'
         else:
             realimage = imagename
         if realimage.exists() and resume:
             self.log.info('Skipping imaging for: %s', realimage)
             do_clean = False
+            kwargs['threshold'] = config.get(threshold_opt, fallback=None)
+            self.log.info('Recovered threshold: %s', kwargs['threshold'])
         elif realimage.exists() and not resume:
             self.log.warning('Deleting image and products: %s', realimage)
-            os.system(f"rm -rf {imagename.with_suffix('.*')}")
+            if (kwargs['specmode'] == 'cube' and
+                config.getboolean('use_multi_clean')):
+                os.system(f"rm -rf {realimage.with_suffix('.*')}")
+            else:
+                os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
         # Run tclean
         if do_clean:
@@ -465,18 +488,41 @@ class ArrayHandler:
                 nsigma = config.get('thresh_nsigma', fallback='3')
                 nsigma = tuple(map(float, nsigma.split(',')))
                 self.log.info('Cleaning down to %s sigma', nsigma)
-                kwargs['threshold'] = auto_thresh(uvdata, imagename, nproc,
-                                                kwargs, nsigma=nsigma,
-                                                log=self.log)
-                kwargs['calcpsf'] = False
-                kwargs['calcres'] = False
+                if (kwargs['specmode'] == 'cube' and
+                    config.getboolean('use_multi_clean')):
+                    imagename, kwargs['threshold'] = cube_multi_clean(
+                        uvdata,
+                        imagename,
+                        nproc,
+                        self.array,
+                        kwargs,
+                        nsigma=nsigma,
+                        plot_results=plot_results,
+                        resume=resume,
+                        log=self.log,
+                    )
+                    kwargs['usemask'] = 'user'
+                else:
+                    kwargs['threshold'] = auto_thresh_clean(
+                        uvdata,
+                        imagename,
+                        nproc,
+                        kwargs,
+                        nsigma=nsigma,
+                        log=self.log,
+                    )
                 self.log.info('Automatic threshold: %s', kwargs['threshold'])
-                #self.update_config(write=True,
-                #                   **{section: {'threshold': kwargs['threshold']}})
+                self.update_config(write=True,
+                                   **{section:
+                                      {threshold_opt: kwargs['threshold']}})
             elif 'threshold' in kwargs:
                 self.log.info('Threshold for clean: %s', kwargs['threshold'])
-            tclean_parallel(uvdata, imagename.with_name(imagename.stem),
-                            nproc, kwargs, log=self.log)
+                tclean_parallel(uvdata, imagename.with_name(imagename.stem),
+                                nproc, kwargs, log=self.log)
+            else:
+                self.log.info('Cleaning without threshold')
+                tclean_parallel(uvdata, imagename.with_name(imagename.stem),
+                                nproc, kwargs, log=self.log)
 
         # Export fits?
         fitsimage = realimage.with_suffix(f'{realimage.suffix}.fits')
@@ -495,8 +541,8 @@ class ArrayHandler:
                 plotname = imagename.with_suffix(f'.{section}.spectrum.png')
                 plotname = outdir / plotname.name
                 chans = plot_imaging_spectra(imagename, plotname,
-                                     threshold=kwargs.get('threshold'),
-                                     masking=masking)
+                                             threshold=kwargs.get('threshold'),
+                                             masking=masking)
             else:
                 chans = None
             self.log.info('Plotting imaging results')
@@ -550,6 +596,7 @@ class ArrayHandler:
             imagename = self.get_imagename(uvtype, outdir=outdir,
                                            section=section, spw=f'{i}',
                                            robust=robust)
+            threshold_opt = f'threshold_spw{i}_robust{robust}'
 
             # Check for files
             self.log.info('.' * 80)
@@ -570,6 +617,7 @@ class ArrayHandler:
                                         auto_threshold=auto_threshold,
                                         export_fits=export_fits,
                                         resume=resume,
+                                        threshold_opt=threshold_opt,
                                         plot_results=plot_results,
                                         spw=spw,
                                         **tclean_args)

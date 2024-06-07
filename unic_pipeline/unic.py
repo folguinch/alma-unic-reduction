@@ -1,3 +1,4 @@
+#!/bin/python3
 """ALMA-UNIC pipeline.
 
 The pipeline is designed to process data for the ALMA-UNIC LP. It performs
