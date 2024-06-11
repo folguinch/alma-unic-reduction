@@ -587,6 +587,11 @@ class ArrayHandler:
         Returns:
           A list with the image file names.
         """
+        # Check spws
+        if len(self.spws) == 0:
+            self.log.warning('Missing SPWs, will read from current uvtype')
+            self.update_spws(uvtype)
+
         # Iterate over spws
         imagenames = []
         for i, spw in enumerate(self.spws):
