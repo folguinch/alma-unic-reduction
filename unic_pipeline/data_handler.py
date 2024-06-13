@@ -896,7 +896,11 @@ class FieldManager:
         """
         uvnames = tuple()
         for array in arrays:
-            uvnames += (self.data_handler[array].get_uvname(uvtype),)
+            uvname = self.data_handler[array].get_uvname(uvtype)
+            if not uvname.exists():
+                continue
+            else:
+                uvnames += (uvname,)
 
         return uvnames
 
@@ -1104,9 +1108,14 @@ class FieldManager:
         # Concatenate products
         for uvtype in uvtypes:
             # Select data to concatenate
-            self.log.info('Concatenating MSs for uvtype: %s', uvtype)
             to_concat = list(map(str, self.get_uvnames(arrays, uvtype=uvtype)))
             concatvis = handler.get_uvname(uvtype)
+
+            # Check there is data to concat
+            if len(to_concat) <= 0:
+                self.log.warning('Nothing to concat for uvtype %s', uvtype)
+                continue
+            self.log.info('Concatenating MSs for uvtype: %s', uvtype)
 
             # Concatenate
             if concatvis.exists() and not self.resume:
