@@ -1,5 +1,5 @@
 """Tools for running the `tclean` CASA task."""
-from typing import Sequence, Optional, Dict
+from typing import Sequence, Optional, Dict, Tuple, Union
 from datetime import datetime
 from pathlib import Path
 import json
@@ -12,7 +12,8 @@ from casatasks import tclean, exportfits
 import astropy.units as u
 
 from .common_types import SectionProxy
-from .utils import get_func_params
+from .plotting import plot_imaging_products, plot_imaging_spectra
+from .utils import get_func_params, round_sigfig
 
 def recommended_auto_masking(array: str) -> Dict:
     """Recommended auto-masking values per array.
@@ -118,12 +119,14 @@ def tclean_parallel(vis: Path,
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
         proc.wait()
 
-def auto_thresh(vis: Path,
-                imagename: Path,
-                nproc: int,
-                tclean_args: dict,
-                nsigma: float = 3.,
-                log: Optional['logging.Logger'] = None) -> str:
+def auto_thresh_clean(vis: Path,
+                      imagename: Path,
+                      nproc: int,
+                      tclean_args: dict,
+                      thresh_niter: int = 2,
+                      nsigma: Tuple[float] = (3.,),
+                      sigfig: int = 3,
+                      log: Optional['logging.Logger'] = None) -> str:
     """Find a threshold value from a dirty image.
 
     Args:
@@ -131,27 +134,141 @@ def auto_thresh(vis: Path,
       imagename: Image file name.
       nproc: Number of processes.
       tclean_args: Other arguments for tclean.
-      nsigma: Optional; Threshold level over rms.
+      thresh_niter: Optional; Number of iterations to find threshhold.
+      nsigma: Optional; Threshold level over rms for each iteration.
+      sigfig: Optional; Number of significant figures.
       log: Optional; Logging function.
     """
-    # Compute dirty
-    clean_args = tclean_args | {'niter': 0}
-    tclean_parallel(vis, imagename.with_name(imagename.stem), nproc, clean_args,
-                    log=log)
+    thresh = None
+    for niter in range(thresh_niter):
+        # Clean
+        if thresh is None:
+            # Compute dirty at niter = 0
+            clean_args = tclean_args | {'niter': 0}
+        tclean_parallel(vis, imagename.with_name(imagename.stem), nproc,
+                        clean_args, log=log)
 
-    # Export fits
-    fitsimage = f"{imagename}_niter{clean_args['niter']}.fits"
-    if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
-        exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
-                   overwrite=True)
-    else:
-        exportfits(f'{imagename}', fitsimage=f'{fitsimage}',
-                   overwrite=True)
-    dirty = fits.open(fitsimage)[0]
-    data = dirty.data * u.Unit(dirty.header['BUNIT'])
+        # Export fits
+        fitsimage = f'{imagename}_niter{niter}.fits'
+        if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
+            exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
+                       overwrite=True)
+        else:
+            exportfits(f'{imagename}', fitsimage=f'{fitsimage}',
+                       overwrite=True)
+        image = fits.open(fitsimage)[0]
+        data = image.data * u.Unit(image.header['BUNIT'])
 
-    # Get rms and threshold
-    thresh = nsigma * mad_std(data, ignore_nan=True)
-    thresh = thresh.to(u.mJy/u.beam)
+        # Get rms and threshold
+        if len(nsigma) == 1:
+            nrms = nsigma[0]
+        else:
+            nrms = nsigma[niter]
+        thresh = nrms * mad_std(data, ignore_nan=True)
+        thresh = round_sigfig(thresh.to(u.mJy/u.beam), sigfig)
+
+        # Update clean parameters for next iteration
+        if log is not None:
+            log.info('Iteration %i threshold: %s', niter+1, thresh)
+        clean_args = {'niter': tclean_args.get('niter', 100000),
+                      'threshold': f'{thresh.value}{thresh.unit*u.beam}',
+                      'calcpsf': False,
+                      'calcres': False}
+        clean_args = tclean_args | clean_args
+
+    # Final clean
+    tclean_parallel(vis, imagename.with_name(imagename.stem), nproc,
+                    clean_args, log=log)
 
     return f'{thresh.value}{thresh.unit*u.beam}'
+
+def cube_multi_images(imagename: Path) -> Tuple[Path]:
+    """Generate image names for `cube_multi_clean`."""
+    initial_imagename = imagename.with_suffix('.hogbom.automasking.image')
+    final_imagename = imagename.with_suffix('.multiscale.image')
+
+    return initial_imagename, final_imagename
+
+def cube_multi_clean(vis: Path,
+                     imagename: Path,
+                     nproc: int,
+                     array: str,
+                     tclean_args: dict,
+                     thresh_niter: int = 2,
+                     nsigma: Tuple[float] = (3.,),
+                     sigfig: int = 3,
+                     plot_results: bool = False,
+                     resume: bool = False,
+                     log: Optional['logging.Logger'] = None) -> Union[Path,
+                                                                      str]:
+    """Clean cubes in multiple steps.
+
+    It first run a `Hogbom` with `auto-multithresh` clean to produce a mask and
+    threshold. Then it uses these and `multiscale` for a final clean.
+
+    Args:
+      vis: Measurement set.
+      imagename: Image file name.
+      nproc: Number of processes.
+      array: Array to image.
+      tclean_args: Other arguments for tclean.
+      thresh_niter: Optional; Number of iterations to find threshhold.
+      nsigma: Optional; Threshold level over rms for each iteration.
+      sigfig: Optional; Number of significant figures.
+      plot_results: Optional; Plot initial clean results.
+      resume: Optional; Resume where it was left?
+      log: Optional; Logger.
+
+    Returns:
+      The final image name and the threshold.
+    """
+    # Check files
+    initial_imagename, final_imagename = cube_multi_images(imagename)
+    if ((initial_imagename.exists() and not resume) or
+        (initial_imagename.exists() and not final_imagename.exists())):
+        if log is not None:
+            log.warning('Deleting first iteration cubes: %s',
+                        initial_imagename)
+        os.system(f"rm -rf {initial_imagename.with_suffix('.*')}")
+
+    # First clean
+    clean_args = {'deconvolver': 'hogbom',
+                  'usemask': 'auto-multithresh'}
+    clean_args = tclean_args | clean_args
+    clean_args = recommended_auto_masking(array) | clean_args
+    threshold = auto_thresh_clean(vis, initial_imagename, nproc, clean_args,
+                                  nsigma=nsigma, thresh_niter=thresh_niter,
+                                  sigfig=sigfig, log=log)
+    mask = initial_imagename.with_suffix('.mask')
+
+    # Plot results of first round
+    if plot_results:
+        outdir = vis.parent / 'plots'
+        outdir.mkdir(exist_ok=True)
+        if log is not None:
+            log.info('Plotting spectrum')
+        plotname = initial_imagename.with_suffix('.cube.spectrum.png')
+        plotname = outdir / plotname.name
+        chans = plot_imaging_spectra(initial_imagename, plotname,
+                                     threshold=threshold,
+                                     masking='auto-multithresh')
+        if log is not None:
+            log.info('Plotting imaging results')
+        plotname = initial_imagename.with_suffix('.cube.results.png')
+        plotname = outdir / plotname.name
+        plot_imaging_products(initial_imagename, plotname, 'hogbom',
+                              'auto-multithresh', threshold=threshold,
+                              chans=chans)
+
+    # Second clean
+    clean_args = {'deconvolver': 'multiscale',
+                  'scales': tclean_args.get('scales', [0,5,15]),
+                  'threshold': threshold,
+                  'usemask': 'user',
+                  'mask': f'{mask}'}
+    clean_args = tclean_args | clean_args
+    tclean_parallel(vis, final_imagename.with_name(final_imagename.stem), nproc,
+                    clean_args, log=log)
+
+    return final_imagename, threshold
+

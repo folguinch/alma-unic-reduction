@@ -106,7 +106,6 @@ The following steps have been implemented (for more details see `unic.py` docume
 - `contsub`: Produces continuum subtracted visibilities.
 - `combine_arrays`: Combine 7m and 12m data if possible.
 - `clean_cont`: Produce CLEAN continuum images.
-
-To be implemented:
-
 - `clean_cubes`: produce CLEAN continuum subtracted cubes.
+
+Continuum and cube cleaning are being tested.

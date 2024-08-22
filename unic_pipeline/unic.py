@@ -1,3 +1,4 @@
+#!/bin/python3
 """ALMA-UNIC pipeline.
 
 The pipeline is designed to process data for the ALMA-UNIC LP. It performs
@@ -60,9 +61,8 @@ def prep_data(args: argparse.Namespace) -> None:
 def dirty_cubes(args: argparse.Namespace):
     """Calculate dirty cubes."""
     for data in args.data.values():
-        data.array_imaging(section='dirty_cubes', uvtype='',
-                           nproc=args.nproc[0], per_spw=True, get_spectra=True,
-                           niter=0)
+        data.array_imaging('dirty_cubes', '', nproc=args.nproc[0],
+                           per_spw=True, get_spectra=True, niter=0)
 
 def continuum(args: argparse.Namespace):
     """Calculate and image the continuum visibilities."""
@@ -86,16 +86,35 @@ def combine_arrays(args: argparse.Namespace):
 
 def clean_continuum(args: argparse.Namespace):
     """Clean continuum for different robust and arrays."""
-    #robust_values = [-2.0, 0.5, 2.0]
-    robust_values = [0.5]
+    robust_values = [-2.0, 0.5, 2.0]
+    #robust_values = [0.5]
     for data in args.data.values():
         for robust in robust_values:
             # Clean data
-            data.array_imaging(nproc=args.nproc[0], robust=robust,
+            if robust == 0.5:
+                compare_to = 'continuum_control'
+            else:
+                compare_to = None
+            data.array_imaging('continuum',
+                               'continuum',
+                               nproc=args.nproc[0],
                                auto_threshold=True,
-                               export_fits=True, plot_results=True)
+                               export_fits=True,
+                               plot_results=True,
+                               compare_to=compare_to,
+                               robust=robust)
 
-            # Plot comparison with control image
+def clean_cubes(args: argparse.Namespace):
+    """Clean continuum for different robust and arrays."""
+    for data in args.data.values():
+        data.array_imaging('clean_cubes',
+                           'uvcontsub',
+                           nproc=args.nproc[0],
+                           auto_threshold=True,
+                           export_fits=True,
+                           per_spw=True,
+                           plot_results=True,
+                           )
 
 def unic(args: Optional[List] = None) -> None:
     """Run the main UNIC pipeline."""
@@ -107,17 +126,12 @@ def unic(args: Optional[List] = None) -> None:
         'contsub': contsub,
         'combine_arrays': combine_arrays,
         'clean_cont': clean_continuum,
-        #'clean_cubes': clean_cubes,
+        'clean_cubes': clean_cubes,
     }
 
     # Default config
     default_config = (Path(__file__).resolve().parent /
                       'configs/default.cfg')
-
-    # Collect all the steps
-    #steps = dict(generate_configs=_generate_configs,
-    #             set_configs=_set_configs,
-    #             **pipe)
 
     # Command line options
     logfile = datetime.now().isoformat(timespec='milliseconds')
@@ -140,6 +154,12 @@ def unic(args: Optional[List] = None) -> None:
     parser.add_argument('--skip', nargs='*', choices=list(steps.keys()),
                         default=[],
                         help='Steps to skip')
+    # To be implemented
+    #group = parser.add_mutually_exclusive_group()
+    #group.add_argument('--continuum', action='store_true',
+    #                   help='Image only the continuum')
+    #group.add_argument('--cubes', action='store_true',
+    #                   help='Image only the cubes')
     parser.add_argument('--field', nargs=1, default=None,
                         help='Field name')
     parser.add_argument('--resume', action='store_true',

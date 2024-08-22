@@ -1,30 +1,46 @@
 """Tools for working with spectrum data."""
 from typing import Tuple, Callable, Optional, List, Dict
+import warnings
 
 from casatools import ms
 from scipy import stats
 from spectral_cube import SpectralCube
+from spectral_cube.utils import SpectralCubeWarning
 import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
-def extract_spectrum(image: 'pathlib.Path') -> Tuple[u.Quantity]:
+def extract_spectrum(image: 'pathlib.Path',
+                     loc: Optional[Tuple[int]] = None) -> Tuple[u.Quantity]:
     """Extract spectrum at the position of the maximum."""
+    # Disable warnings
+    warnings.filterwarnings(action='ignore', category=SpectralCubeWarning,
+                            append=True)
+
     # Open cube
-    cube = SpectralCube.read(image)
-    cube.allow_huge_operations = True
-    cube = cube.with_spectral_unit(u.GHz, velocity_convention='radio')
+    if image.suffix == '.fits':
+        dformat = 'fits'
+        use_dask = False
+    else:
+        dformat = 'casa'
+        use_dask = True
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        cube = SpectralCube.read(image, format=dformat, use_dask=use_dask)
+        cube.allow_huge_operations = True
+        cube = cube.with_spectral_unit(u.GHz, velocity_convention='radio')
 
     # Collapse image
-    collapsed = np.sum(cube.unmasked_data[:], axis=0)
-    loc = np.unravel_index(np.nanargmax(collapsed), collapsed.shape)
+    if loc is None:
+        collapsed = np.sum(cube.unmasked_data[:], axis=0)
+        loc = np.unravel_index(np.nanargmax(collapsed), collapsed.shape)
 
     # Spectrum
     freq = cube.spectral_axis
     flux = cube.unmasked_data[:, loc[0], loc[1]]
 
-    return freq, flux
+    return freq, flux, loc
 
 def freq_to_chan(freq: npt.ArrayLike, chan: npt.ArrayLike) -> Tuple[Callable]:
     """Generate functions to convert frequencies in channels and viceversa."""
@@ -34,17 +50,23 @@ def freq_to_chan(freq: npt.ArrayLike, chan: npt.ArrayLike) -> Tuple[Callable]:
 
 def plot_spectrum(spectrum: Tuple[u.Quantity],
                   filename: 'pathlib.Path',
+                  residual: Optional[Tuple[u.Quantity]] = None,
                   selection: Optional[List[Tuple[int]]] = None,
-                  functions: Tuple[Callable] = None):
+                  functions: Optional[Tuple[Callable]] = None,
+                  title: str = '',
+                  hline: Optional[u.Quantity] = None):
     """Plot a spectrum."""
     # Figure and axis
     fig, ax = plt.subplots(figsize=(15, 5))
 
     # Plot spectrum
     ax.plot(spectrum[0].value, spectrum[1].to(u.mJy/u.beam).value, 'b-')
+    if residual is not None:
+        ax.plot(residual[0].value, residual[1].to(u.mJy/u.beam).value, 'g-')
     ax.set_xlim(np.min(spectrum[0].value), np.max(spectrum[0].value))
     ax.set_xlabel('LSRK Frequency (GHz)')
     ax.set_ylabel('Intensity (mJy/beam)')
+    ax.set_title(title)
 
     # Axes properties
     if functions is not None:
@@ -56,6 +78,10 @@ def plot_spectrum(spectrum: Tuple[u.Quantity],
         opts = {'color': 'r', 'alpha': 0.2}
         for selected in selection:
             ax.axvspan(*selected, **opts)
+
+    # Horizontal line
+    if hline is not None:
+        ax.axhline(y=hline.to(u.mJy/u.beam).value, color='m')
 
     # Save
     fig.savefig(filename, bbox_inches='tight')

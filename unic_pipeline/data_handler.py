@@ -17,8 +17,10 @@ from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
                     flags_from_cont_ranges, clumps_to_casa)
 from .clean_tasks import (get_tclean_params, tclean_parallel,
-                          recommended_auto_masking, auto_thresh)
-from .plotting import plot_imaging_products
+                          recommended_auto_masking, auto_thresh_clean,
+                          cube_multi_clean, cube_multi_images)
+from .plotting import (plot_imaging_products, plot_comparison,
+                       plot_imaging_spectra)
 from .spectrum_tools import extract_spectrum, plot_spectral_selection
 
 def new_array_dict(arrays: Sequence = ('12m', '7m')):
@@ -228,6 +230,41 @@ class ArrayHandler:
             suffix = ''
         return suffix
 
+    def get_imagename(self,
+                      uvtype: str,
+                      outdir: Optional[Path] = None,
+                      section: Optional[str] = None,
+                      **suffixes) -> Path:
+        """Generate an image name for intent.
+        
+        Args:
+          uvtype: Type of uv data.
+          outdir: Optional; Output directory.
+          section: Optional; Config section of the image.
+          suffixes: Optional; Additional `key_value` for file name.
+        """
+        # Set and create output directory
+        if outdir is None:
+            if section is not None:
+                outdir = self.uvdata.parent / section
+                outdir.mkdir(exist_ok=True)
+            else:
+                outdir = Path('./')
+        else:
+            outdir.mkdir(exist_ok=True)
+
+        # Obtain additional suffixes
+        suffix = self.get_uvsuffix(uvtype)
+        aux = '_'.join(f'{k}{v}' for k, v in suffixes.items())
+
+        # Generate name path
+        imagename = f'{self.name}_{self.array}'
+        if len(aux) != 0:
+            imagename = f'{imagename}_{aux}'
+        imagename = outdir / f'{imagename}{suffix}.image'
+
+        return imagename
+
     def _cont_from_file(self) -> Dict[int, List[str]]:
         """Read continuum ranges from `cont_file`."""
         # Read file
@@ -356,97 +393,180 @@ class ArrayHandler:
 
     def clean_data(self,
                    section: str,
-                   imagename: Path,
                    uvtype: str,
+                   imagename: Optional[Path] = None,
                    nproc: int = 5,
                    auto_threshold: bool = False,
                    export_fits: bool = False,
                    resume: bool = False,
+                   threshold_opt: Optional[str] = None,
                    plot_results: bool = False,
-                   **tclean_args):
+                   **tclean_args) -> Path:
         """Run tclean on input or stored uvdata.
 
         Arguments given under `tclean_args` replace the values from `config`.
 
         Args:
           section: Configuration section.
-          imagename: Image directory path.
           uvtype: Type of uvdata to clean.
+          imagename: Optional; Image directory path.
           nproc: Optional; Number of processors for parallel clean.
           auto_threshold: Optional; Calculate threshold from noise in initial
             dirty image?
           export_fits: Optional; Export image to FITS file?
           resume: Optional; Resume where it was left?
+          threshold_opt: Optional; Threshold config option for resume.
           plot_results: Optional; plot image, residual and masks?
           tclean_args: Optional; Additional arguments for tclean.
+
+        Returns:
+          The image file name.
         """
         # tclean args
         config = self.config[section]
         kwargs = get_tclean_params(config, cfgvars=tclean_args)
         if uvtype == 'continuum':
             kwargs.setdefault('specmode', 'mfs')
+            kwargs.setdefault('pbcor', True)
         elif uvtype in ['', 'uvcontsub']:
             kwargs.setdefault('specmode', 'cube')
             kwargs.setdefault('outframe', 'LSRK')
+        else:
+            raise ValueError(f'Type {uvtype} not recognized')
         kwargs.setdefault('deconvolver', 'hogbom')
         kwargs.setdefault('weighting', 'briggs')
         kwargs.setdefault('robust', 0.5)
         kwargs.setdefault('gridder', 'standard')
         kwargs.setdefault('niter', 100000)
 
+        # Recover threshold
+        if threshold_opt is None:
+            if 'threshold' in kwargs:
+                threshold_opt = 'threshold'
+            else:
+                threshold_opt = f"threshold_robust{kwargs['robust']}"
+        if threshold_opt in config:
+            self.log.info('Recovering threshold from %s in config',
+                          threshold_opt)
+            kwargs['threshold'] = config[threshold_opt]
+
+        # Set imagename
+        if imagename is None:
+            imagename = self.get_imagename(uvtype, section=section,
+                                           robust=kwargs['robust'])
+
         # Masking
         if kwargs.get('usemask', '') == 'auto-multithresh':
             kwargs = recommended_auto_masking(self.array) | kwargs
 
         # Check for files
+        do_clean = True
         if kwargs['deconvolver'] == 'mtmfs':
             realimage = imagename.with_suffix('.image.tt0')
+        elif (kwargs['specmode'] == 'cube' and
+              config.getboolean('use_multi_clean')):
+            _, realimage = cube_multi_images(imagename)
+            kwargs['usemask'] = 'user'
         else:
             realimage = imagename
         if realimage.exists() and resume:
-            return
+            self.log.info('Skipping imaging for: %s', realimage)
+            do_clean = False
+            kwargs['threshold'] = config.get(threshold_opt, fallback=None)
+            self.log.info('Recovered threshold: %s', kwargs['threshold'])
         elif realimage.exists() and not resume:
             self.log.warning('Deleting image and products: %s', realimage)
-            os.system(f"rm -rf {imagename.with_suffix('.*')}")
+            if (kwargs['specmode'] == 'cube' and
+                config.getboolean('use_multi_clean')):
+                os.system(f"rm -rf {realimage.with_suffix('.*')}")
+            else:
+                os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
         # Run tclean
-        uvdata = self.get_uvname(uvtype)
-        if auto_threshold and 'threshold' not in kwargs:
-            nsigma = config.getfloat('thresh_nsigma', fallback=3.)
-            self.log.info('Cleaning down to %f sigma', nsigma)
-            kwargs['threshold'] = auto_thresh(uvdata, imagename, nproc,
-                                              kwargs, nsigma=nsigma,
-                                              log=self.log)
-            kwargs['calcpsf'] = False
-            kwargs['calcres'] = False
-            self.log.info('Automatic threshold: %s', kwargs['threshold'])
-            self.update_config(write=True,
-                               **{section: {'threshold': kwargs['threshold']}})
-        tclean_parallel(uvdata, imagename.with_name(imagename.stem),
-                        nproc, kwargs, log=self.log)
+        if do_clean:
+            uvdata = self.get_uvname(uvtype)
+            if auto_threshold and 'threshold' not in kwargs:
+                nsigma = config.get('thresh_nsigma', fallback='3')
+                nsigma = tuple(map(float, nsigma.split(',')))
+                self.log.info('Cleaning down to %s sigma', nsigma)
+                if (kwargs['specmode'] == 'cube' and
+                    config.getboolean('use_multi_clean')):
+                    imagename, kwargs['threshold'] = cube_multi_clean(
+                        uvdata,
+                        imagename,
+                        nproc,
+                        self.array,
+                        kwargs,
+                        nsigma=nsigma,
+                        plot_results=plot_results,
+                        resume=resume,
+                        log=self.log,
+                    )
+                    kwargs['usemask'] = 'user'
+                else:
+                    kwargs['threshold'] = auto_thresh_clean(
+                        uvdata,
+                        imagename,
+                        nproc,
+                        kwargs,
+                        nsigma=nsigma,
+                        log=self.log,
+                    )
+                self.log.info('Automatic threshold: %s', kwargs['threshold'])
+                self.update_config(write=True,
+                                   **{section:
+                                      {threshold_opt: kwargs['threshold']}})
+            elif 'threshold' in kwargs:
+                self.log.info('Threshold for clean: %s', kwargs['threshold'])
+                tclean_parallel(uvdata, imagename.with_name(imagename.stem),
+                                nproc, kwargs, log=self.log)
+            else:
+                self.log.info('Cleaning without threshold')
+                tclean_parallel(uvdata, imagename.with_name(imagename.stem),
+                                nproc, kwargs, log=self.log)
 
         # Export fits?
-        if export_fits:
-            fitsimage = f'{realimage}.fits'
+        fitsimage = realimage.with_suffix(f'{realimage.suffix}.fits')
+        if export_fits and (do_clean or not fitsimage.exists()):
+            self.log.info('Exporting image to FITS')
             exportfits(imagename=f'{realimage}', fitsimage=f'{fitsimage}',
                        overwrite=True)
 
         # Plot images
         if plot_results:
-            outdir = self.uvcontsub.parent / 'plots'
+            outdir = self.uvdata.parent / 'plots'
             outdir.mkdir(exist_ok=True)
+            masking = kwargs.get('usemask')
+            if kwargs['specmode'] == 'cube':
+                self.log.info('Plotting spectrum')
+                plotname = imagename.with_suffix(f'.{section}.spectrum.png')
+                plotname = outdir / plotname.name
+                chans = plot_imaging_spectra(imagename, plotname,
+                                             threshold=kwargs.get('threshold'),
+                                             masking=masking)
+            else:
+                chans = None
+            self.log.info('Plotting imaging results')
             plotname = imagename.with_suffix(f'.{section}.results.png')
             plotname = outdir / plotname.name
-            plot_imaging_products(imagename, plotname, kwargs['deconvolver'],
-                                  kwargs['usemask'])
+            plot_imaging_products(imagename, plotname,
+                                  kwargs['deconvolver'],
+                                  masking,
+                                  threshold=kwargs.get('threshold'),
+                                  chans=chans)
+
+        return realimage
 
     def clean_per_spw(self,
                       section: str,
-                      outdir: Path = Path('./'),
-                      uvtype: str = '',
+                      uvtype: str,
+                      outdir: Optional[Path] = None,
                       nproc: int = 5,
                       resume: bool = False,
+                      auto_threshold: bool = False,
+                      export_fits: bool = False,
                       get_spectra: bool = False,
+                      plot_results: bool = False,
                       **tclean_args) -> List[Path]:
         """Run `tclean` on all spws.
         
@@ -454,39 +574,59 @@ class ArrayHandler:
 
         Args:
           section: Configuration section.
-          outdir: Output directory path.
-          uvtype: Optional; Type of uvdata to clean.
+          uvtype: Type of uvdata to clean.
+          outdir: Optional; Output directory path.
           nproc: Optional; Number of processors for parallel clean.
           resume: Optional; Resume where it was left?
           get_spectra: Optional; Extract spectra from cubes per spw?
+          auto_threshold: Optional; Calculate threshold from noise in initial
+            dirty image?
+          export_fits: Optional; Export image to FITS file?
+          plot_results: Optional; Plot spectra, image, residual and masks?
           tclean_args: Optional; Additional arguments for tclean.
 
         Returns:
           A list with the image file names.
         """
+        # Check spws
+        if len(self.spws) == 0:
+            self.log.warning('Missing SPWs, will read from current uvtype')
+            self.update_spws(uvtype)
+
         # Iterate over spws
         imagenames = []
         for i, spw in enumerate(self.spws):
             # Clean args
-            suffix = self.get_uvsuffix(uvtype)
-            imagename = outdir / (f'{self.name}_{self.array}_spw{i}'
-                                  f'{suffix}.image')
+            robust = self.config.get(section, 'robust',
+                                     vars=tclean_args, fallback=0.5)
+            imagename = self.get_imagename(uvtype, outdir=outdir,
+                                           section=section, spw=f'{i}',
+                                           robust=robust)
+            threshold_opt = f'threshold_spw{i}_robust{robust}'
 
             # Check for files
             self.log.info('.' * 80)
             self.log.info('Cleaning SPW: %i (%s)', i, spw)
-            trigger = True
-            if imagename.exists() and resume:
-                self.log.info('Skipping cube for spw %i', i)
-                trigger = False
-            elif imagename.exists() and not resume:
-                self.log.warning('Deleting cubes for spw %i', i)
-                os.system(f"rm -rf {imagename.with_suffix('.*')}")
+            #trigger = True
+            #if imagename.exists() and resume:
+            #    self.log.info('Skipping cube for spw %i', i)
+            #    trigger = False
+            #elif imagename.exists() and not resume:
+            #    self.log.warning('Deleting cubes for spw %i', i)
+            #    os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
             # Run clean
-            if trigger:
-                self.clean_data(section, imagename, uvtype, nproc=nproc,
-                                resume=resume, spw=spw, **tclean_args)
+            #if trigger:
+            imagename = self.clean_data(section, uvtype,
+                                        imagename=imagename,
+                                        nproc=nproc,
+                                        auto_threshold=auto_threshold,
+                                        export_fits=export_fits,
+                                        resume=resume,
+                                        threshold_opt=threshold_opt,
+                                        plot_results=plot_results,
+                                        spw=spw,
+                                        **tclean_args)
             imagenames.append(imagename)
 
             # Extract spectrum
@@ -496,7 +636,7 @@ class ArrayHandler:
                 if not fitsimage.exists():
                     exportfits(imagename=f'{imagename}',
                                fitsimage=f'{fitsimage}')
-                self.spectra.append(extract_spectrum(fitsimage))
+                    self.spectra.append(extract_spectrum(fitsimage)[:-1])
 
         return imagenames
 
@@ -609,8 +749,6 @@ class ArrayHandler:
                 self.log.info('No spectra to plot')
 
             # Split the uvdata
-            # WARNING: this needs to be tested
-            # otherwise, use flagmanager and then split the visibilities
             self.log.info('Flagging data')
             flagmanager(vis=f'{self.uvdata}', mode='save',
                         versionname='before_cont_flags')
@@ -759,7 +897,11 @@ class FieldManager:
         """
         uvnames = tuple()
         for array in arrays:
-            uvnames += (self.data_handler[array].get_uvname(uvtype),)
+            uvname = self.data_handler[array].get_uvname(uvtype)
+            if not uvname.exists():
+                continue
+            else:
+                uvnames += (uvname,)
 
         return uvnames
 
@@ -814,31 +956,33 @@ class FieldManager:
             handler.update_spws()
 
     def array_imaging(self,
+                      section: str,
+                      uvtype: str,
                       arrays: Optional[Sequence[str]] = None,
                       outdir: Optional[Path] = None,
-                      section: str = 'continuum',
-                      uvtype: str = 'continuum',
                       nproc: int = 5,
                       auto_threshold: bool = False,
                       per_spw: bool = False,
                       get_spectra: bool = False,
                       export_fits: bool = False,
                       plot_results: bool = False,
+                      compare_to: Optional[str] = None,
                       **tclean_args):
         """Image an array.
 
         Args:
+          section: Configuration section with `tclean` parameters.
+          uvtype: Type of uv data to clean.
           arrays: Optional; Array to image.
-          outdirs: Optional; Output directory.
-          section: Optional; Configuration section with `tclean` parameters.
-          uvtype: Optional; Type of uv data to clean.
+          outdir: Optional; Output directory.
           nproc: Optional; Number of parallel processes for cleaning.
           auto_threshold: Optional; Calculate threshold from noise in initial
             dirty image?
           per_spw: Optional; Clean each SPW individually?
           get_spectra: Optional; Extract spectra from cubes per SPW?
           export_fits: Optional; Export image to FITS file?
-          plot_results: Optional; plot image, residual and masks?
+          plot_results: Optional; Plot image, residual and masks?
+          compare_to: Optional; Compare image with this execution?
           tclean_args: Optional; Additional `casatasks.tclean` arguments.
         """
         # Select arrays
@@ -853,9 +997,6 @@ class FieldManager:
             if array == '7m12m' and not handler.get_uvname(uvtype).exists():
                 self.log.info('Skipping imaging for %s', array)
                 continue
-            if outdir is None:
-                outdir = handler.uvdata.parent / section
-            outdir.mkdir(exist_ok=True)
             self.log.info('-' * 80)
             self.log.info('Cleaning array: %s', array)
 
@@ -866,21 +1007,40 @@ class FieldManager:
 
             # Clean cases
             if per_spw:
-                handler.clean_per_spw(section, outdir=outdir,
-                                      nproc=nproc, uvtype=uvtype,
+                handler.clean_per_spw(section,
+                                      uvtype,
+                                      outdir=outdir,
+                                      nproc=nproc,
+                                      auto_threshold=auto_threshold,
+                                      resume=self.resume,
+                                      export_fits=export_fits,
                                       get_spectra=get_spectra,
-                                      resume=self.resume, **tclean_args)
+                                      plot_results=plot_results,
+                                      **tclean_args)
             else:
-                suffix = handler.get_uvsuffix(uvtype)
-                robust = handler.config.get(section, 'robust',
-                                            vars=tclean_args, fallback=0.5)
-                imagename = f'{handler.name}_{array}_robust{robust}'
-                imagename = outdir / f'{imagename}{suffix}.image'
-                handler.clean_data(section, imagename, uvtype, nproc=nproc,
-                                   auto_threshold=auto_threshold,
-                                   resume=self.resume, export_fits=export_fits,
-                                   plot_results=plot_results,
-                                   **tclean_args)
+                imagename = handler.clean_data(section,
+                                               uvtype,
+                                               nproc=nproc,
+                                               auto_threshold=auto_threshold,
+                                               resume=self.resume,
+                                               export_fits=export_fits,
+                                               plot_results=plot_results,
+                                               **tclean_args)
+
+                if compare_to is not None:
+                    self.log.info('Plotting comparison between %s and %s',
+                                  section, compare_to)
+                    if (robust:=tclean_args.get('robust')) is not None:
+                        comp_image = handler.get_imagename(uvtype,
+                                                           section=compare_to,
+                                                           robust=robust)
+                    else:
+                        raise ValueError('Robust parameter needed for name')
+                    plotname = imagename.with_suffix((f'.{section}'
+                                                      f'.compare_{compare_to}'
+                                                      '.png'))
+                    plotname = handler.uvdata.parent / 'plots' / plotname.name
+                    plot_comparison(comp_image, imagename, plotname)
 
     def contsub_visibilities(self,
                              dirty_images: bool = False,
@@ -902,9 +1062,8 @@ class FieldManager:
         # Compute dirty
         if dirty_images:
             self.log.info('Producing dirty images for contsub')
-            self.array_imaging(uvtype='uvcontsub', nproc=nproc,
-                               section='dirty_cubes', per_spw=True,
-                               get_spectra=get_spectra, niter=0)
+            self.array_imaging('dirty_cubes', 'uvcontsub', nproc=nproc,
+                               per_spw=True, get_spectra=get_spectra, niter=0)
 
     def continuum_visibilities(self,
                                control_image: bool = False,
@@ -926,7 +1085,7 @@ class FieldManager:
         # Make a control image
         if control_image:
             self.log.info('Producing control images for continuum')
-            self.array_imaging(outdir=outdir, section='continuum_control',
+            self.array_imaging('continuum_control', 'continuum', outdir=outdir,
                                nproc=nproc, auto_threshold=True,
                                export_fits=True, plot_results=True)
 
@@ -950,9 +1109,14 @@ class FieldManager:
         # Concatenate products
         for uvtype in uvtypes:
             # Select data to concatenate
-            self.log.info('Concatenating MSs for uvtype: %s', uvtype)
             to_concat = list(map(str, self.get_uvnames(arrays, uvtype=uvtype)))
             concatvis = handler.get_uvname(uvtype)
+
+            # Check there is data to concat
+            if len(to_concat) <= 0:
+                self.log.warning('Nothing to concat for uvtype %s', uvtype)
+                continue
+            self.log.info('Concatenating MSs for uvtype: %s', uvtype)
 
             # Concatenate
             if concatvis.exists() and not self.resume:
@@ -967,12 +1131,16 @@ class FieldManager:
             # Control images
             if control_images:
                 if uvtype == 'uvcontsub':
-                    self.array_imaging(arrays=[new_array], uvtype=uvtype,
-                                       section='dirty_cubes', per_spw=True,
-                                       nproc=nproc, niter=0)
+                    self.array_imaging('dirty_cubes',
+                                       uvtype,
+                                       arrays=[new_array],
+                                       per_spw=True,
+                                       nproc=nproc,
+                                       niter=0)
                 elif uvtype == 'continuum':
-                    self.array_imaging(arrays=[new_array],
-                                       section='continuum_control',
+                    self.array_imaging('continuum_control',
+                                       uvtype,
+                                       arrays=[new_array],
                                        auto_threshold=True,
                                        nproc=nproc,
                                        export_fits=True)
