@@ -439,14 +439,15 @@ class ArrayHandler:
         kwargs.setdefault('gridder', 'standard')
         kwargs.setdefault('niter', 100000)
 
-        # Recover threshold 
+        # Recover threshold
         if threshold_opt is None:
             if 'threshold' in kwargs:
                 threshold_opt = 'threshold'
             else:
                 threshold_opt = f"threshold_robust{kwargs['robust']}"
         if threshold_opt in config:
-            self.log.info('Recovering threshold from %s in config', threshold_opt)
+            self.log.info('Recovering threshold from %s in config',
+                          threshold_opt)
             kwargs['threshold'] = config[threshold_opt]
 
         # Set imagename
@@ -528,7 +529,7 @@ class ArrayHandler:
         fitsimage = realimage.with_suffix(f'{realimage.suffix}.fits')
         if export_fits and (do_clean or not fitsimage.exists()):
             self.log.info('Exporting image to FITS')
-            exportfits(imagename=f'{realimage}', fitsimage=f'fitsimage',
+            exportfits(imagename=f'{realimage}', fitsimage=f'{fitsimage}',
                        overwrite=True)
 
         # Plot images
@@ -553,7 +554,7 @@ class ArrayHandler:
                                   masking,
                                   threshold=kwargs.get('threshold'),
                                   chans=chans)
-        
+
         return realimage
 
     def clean_per_spw(self,

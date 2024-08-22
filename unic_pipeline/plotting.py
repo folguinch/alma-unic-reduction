@@ -1,11 +1,9 @@
 """Plotting tools."""
-from typing import Optional, Tuple, Dict
-from itertools import product
+from typing import Optional, Dict
 
 from astropy.io import fits
 from astropy.stats import mad_std
 from casatasks import exportfits
-from spectral_cube import SpectralCube
 import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
@@ -45,7 +43,7 @@ def plot_imaging_products(imagename: 'pathlib.Path',
             masks.append(fitsimage)
         if not fitsimage.exists():
             exportfits(imagename=f'{imname}', fitsimage=f'{fitsimage}')
-    
+
     # Plot data
     if chans is None:
         chans = {'dummy': None}
@@ -77,7 +75,7 @@ def plot_imaging_products(imagename: 'pathlib.Path',
                 level = u.Quantity(threshold).to(u.Jy).value
                 ax.contour(contour_map, levels=[level], colors='m',
                            origin='lower', linewidths=1)
-            
+
             # Decorations
             if i == 0:
                 title = (f'Peak: {vmax*1E3:.1f}mJy/beam '
@@ -173,7 +171,7 @@ def plot_comparison(reference: 'pathlib.Path',
         else:
             ax.contour(contour_map, levels=levels, colors='k',  origin='lower',
                        linewidths=1)
-        
+
         # Decorations
         if i != 2:
             title = (f'Peak: {np.nanmax(image)*1E3:.1f}mJy/beam - '
@@ -226,7 +224,7 @@ def plot_imaging_spectra(imagename: 'pathlib.Path',
     else:
         filenames.append(plotname.with_suffix((f'.x{loc[1]}y{loc[0]}'
                                                f'{plotname.suffix}')))
-    
+
     # Plot spectrum
     chans = {}
     title_base = f'Position: (x,y) = ({loc[1]},{loc[0]})'

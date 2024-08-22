@@ -20,14 +20,14 @@ def extract_spectrum(image: 'pathlib.Path',
 
     # Open cube
     if image.suffix == '.fits':
-        format = 'fits'
+        dformat = 'fits'
         use_dask = False
     else:
-        format = 'casa'
+        dformat = 'casa'
         use_dask = True
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        cube = SpectralCube.read(image, format=format, use_dask=use_dask)
+        warnings.simplefilter('ignore')
+        cube = SpectralCube.read(image, format=dformat, use_dask=use_dask)
         cube.allow_huge_operations = True
         cube = cube.with_spectral_unit(u.GHz, velocity_convention='radio')
 

@@ -149,7 +149,7 @@ def auto_thresh_clean(vis: Path,
                         clean_args, log=log)
 
         # Export fits
-        fitsimage = f"{imagename}_niter{niter}.fits"
+        fitsimage = f'{imagename}_niter{niter}.fits'
         if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
             exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
                        overwrite=True)
@@ -169,7 +169,7 @@ def auto_thresh_clean(vis: Path,
 
         # Update clean parameters for next iteration
         if log is not None:
-            log.info(f'Iteration %i threshold: %s', niter+1, thresh)
+            log.info('Iteration %i threshold: %s', niter+1, thresh)
         clean_args = {'niter': tclean_args.get('niter', 100000),
                       'threshold': f'{thresh.value}{thresh.unit*u.beam}',
                       'calcpsf': False,
@@ -237,7 +237,8 @@ def cube_multi_clean(vis: Path,
     clean_args = tclean_args | clean_args
     clean_args = recommended_auto_masking(array) | clean_args
     threshold = auto_thresh_clean(vis, initial_imagename, nproc, clean_args,
-                                  nsigma=nsigma, log=log)
+                                  nsigma=nsigma, thresh_niter=thresh_niter,
+                                  sigfig=sigfig, log=log)
     mask = initial_imagename.with_suffix('.mask')
 
     # Plot results of first round
