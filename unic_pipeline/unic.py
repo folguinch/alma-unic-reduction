@@ -133,11 +133,6 @@ def unic(args: Optional[List] = None) -> None:
     default_config = (Path(__file__).resolve().parent /
                       'configs/default.cfg')
 
-    # Collect all the steps
-    #steps = dict(generate_configs=_generate_configs,
-    #             set_configs=_set_configs,
-    #             **pipe)
-
     # Command line options
     logfile = datetime.now().isoformat(timespec='milliseconds')
     logfile = f'debug_unic_{logfile}.log'
@@ -159,6 +154,12 @@ def unic(args: Optional[List] = None) -> None:
     parser.add_argument('--skip', nargs='*', choices=list(steps.keys()),
                         default=[],
                         help='Steps to skip')
+    # To be implemented
+    #group = parser.add_mutually_exclusive_group()
+    #group.add_argument('--continuum', action='store_true',
+    #                   help='Image only the continuum')
+    #group.add_argument('--cubes', action='store_true',
+    #                   help='Image only the cubes')
     parser.add_argument('--field', nargs=1, default=None,
                         help='Field name')
     parser.add_argument('--resume', action='store_true',
