@@ -49,7 +49,7 @@ def prep_data(args: argparse.Namespace) -> None:
     elif args.uvdata is not None:
         args.data = DataManager.from_uvdata(
             args.uvdata,
-            args.defconfig,
+            args.defconfig[0],
             args.log,
             datadir=args.basedir[0],
             cont=args.cont,
@@ -80,7 +80,7 @@ def combine_arrays(args: argparse.Namespace):
         if '7m' not in data.arrays or '12m' not in data.arrays:
             args.log.warning('Arrays missing for combiantion: %s', data.arrays)
             continue
-        data.combine_arrays(('7m', '12m'), default_config=args.defconfig,
+        data.combine_arrays(('7m', '12m'), default_config=args.defconfig[0],
                             datadir=args.basedir[0], control_images=True,
                             nproc=args.nproc[0])
 
@@ -169,10 +169,12 @@ def unic(args: Optional[List] = None) -> None:
                         help='uv data ms')
     parser.add_argument('--configfiles', nargs='+', action=actions.CheckFile,
                         help='Configuration file names')
+    parser.add_argument('--default_config', nargs=1, action=actions.CheckFile,
+                        default=[default_config], dest='defconfig',
+                        help='Default configuration file name')
     parser.add_argument('--cont', nargs='+', action=actions.CheckFile,
                         help='Continuum files')
-    parser.set_defaults(data=None,
-                        defconfig=default_config)
+    parser.set_defaults(data=None)
 
     # Check args
     if args is None:
