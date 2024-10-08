@@ -426,16 +426,16 @@ class ArrayHandler:
         config = self.config[section]
         kwargs = get_tclean_params(config, cfgvars=tclean_args)
         if uvtype == 'continuum':
-            kwargs.setdefault('specmode', 'mfs')
+            specmode = kwargs.setdefault('specmode', 'mfs')
             kwargs.setdefault('pbcor', True)
         elif uvtype in ['', 'uvcontsub']:
-            kwargs.setdefault('specmode', 'cube')
+            specmode = kwargs.setdefault('specmode', 'cube')
             kwargs.setdefault('outframe', 'LSRK')
         else:
             raise ValueError(f'Type {uvtype} not recognized')
-        kwargs.setdefault('deconvolver', 'hogbom')
+        deconvolver = kwargs.setdefault('deconvolver', 'hogbom')
         kwargs.setdefault('weighting', 'briggs')
-        kwargs.setdefault('robust', 0.5)
+        robust = kwargs.setdefault('robust', 0.5)
         kwargs.setdefault('gridder', 'standard')
         kwargs.setdefault('niter', 100000)
 
@@ -444,7 +444,7 @@ class ArrayHandler:
             if 'threshold' in kwargs:
                 threshold_opt = 'threshold'
             else:
-                threshold_opt = f"threshold_robust{kwargs['robust']}"
+                threshold_opt = f'threshold_robust{robust}'
         if threshold_opt in config:
             self.log.info('Recovering threshold from %s in config',
                           threshold_opt)
@@ -453,7 +453,7 @@ class ArrayHandler:
         # Set imagename
         if imagename is None:
             imagename = self.get_imagename(uvtype, section=section,
-                                           robust=kwargs['robust'])
+                                           robust=robust)
 
         # Masking
         if kwargs.get('usemask', '') == 'auto-multithresh':
@@ -461,9 +461,9 @@ class ArrayHandler:
 
         # Check for files
         do_clean = True
-        if kwargs['deconvolver'] == 'mtmfs':
+        if deconvolver == 'mtmfs':
             realimage = imagename.with_suffix('.image.tt0')
-        elif (kwargs['specmode'] == 'cube' and
+        elif (specmode == 'cube' and
               config.getboolean('use_multi_clean')):
             _, realimage = cube_multi_images(imagename)
             kwargs['usemask'] = 'user'
@@ -489,7 +489,7 @@ class ArrayHandler:
                 nsigma = config.get('thresh_nsigma', fallback='3')
                 nsigma = tuple(map(float, nsigma.split(',')))
                 self.log.info('Cleaning down to %s sigma', nsigma)
-                if (kwargs['specmode'] == 'cube' and
+                if (specmode == 'cube' and
                     config.getboolean('use_multi_clean')):
                     imagename, kwargs['threshold'] = cube_multi_clean(
                         uvdata,
@@ -512,7 +512,8 @@ class ArrayHandler:
                         nsigma=nsigma,
                         log=self.log,
                     )
-                self.log.info('Automatic threshold: %s', kwargs['threshold'])
+                self.log.info('Automatic final threshold: %s',
+                              kwargs['threshold'])
                 self.update_config(write=True,
                                    **{section:
                                       {threshold_opt: kwargs['threshold']}})
@@ -531,13 +532,19 @@ class ArrayHandler:
             self.log.info('Exporting image to FITS')
             exportfits(imagename=f'{realimage}', fitsimage=f'{fitsimage}',
                        overwrite=True)
+            if kwargs.get('pbcor'):
+                pbcorimage = imagename.with_suffix('.pbcor')
+                pbcorfits = pbcorimage.with_suffix('.pbcor.fits')
+                exportfits(imagename=f'{pbcorimage}', fitsimage=f'{pbcorfits}',
+                           overwrite=True)
+
 
         # Plot images
         if plot_results:
             outdir = self.uvdata.parent / 'plots'
             outdir.mkdir(exist_ok=True)
             masking = kwargs.get('usemask')
-            if kwargs['specmode'] == 'cube':
+            if specmode == 'cube':
                 self.log.info('Plotting spectrum')
                 plotname = imagename.with_suffix(f'.{section}.spectrum.png')
                 plotname = outdir / plotname.name
@@ -636,7 +643,7 @@ class ArrayHandler:
                 if not fitsimage.exists():
                     exportfits(imagename=f'{imagename}',
                                fitsimage=f'{fitsimage}')
-                    self.spectra.append(extract_spectrum(fitsimage)[:-1])
+                self.spectra.append(extract_spectrum(fitsimage)[:-1])
 
         return imagenames
 
