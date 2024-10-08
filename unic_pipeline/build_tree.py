@@ -9,14 +9,20 @@ from astropy.table import Table
 from unic_pipeline.utils import get_targets, get_array
 import unic_pipeline.argparse_actions as actions
 
-def find_calibrated(directory: Path) -> List:
+def find_calibrated(directory: Path, use_targets: bool = False) -> List:
     """Find the calibrated MS within `directory`."""
     # Iterate over directory
     mss = []
     for ms in directory.glob('**/calibrated/*.ms'):
-        if '_targets' in ms.name:
+        if use_targets:
+            if '_targets.ms' in ms.name:
+                mss.append(ms)
+            else:
+                continue
+        elif '_targets' not in ms.name:
+            mss.append(ms)
+        else:
             continue
-        mss.append(ms)
 
     return mss
 
@@ -45,6 +51,8 @@ def build_tree(args: Optional[List] = None) -> None:
         add_help=True,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument('--targets', action='store_true',
+                        help='Use targets.ms files')
     parser.add_argument('directory', nargs=1, action=actions.NormalizePath,
                         help='Base directory to iterate over')
     parser.add_argument('table', nargs=1, action=actions.NormalizePath,
@@ -56,7 +64,7 @@ def build_tree(args: Optional[List] = None) -> None:
     args = parser.parse_args(args)
 
     # Run through steps
-    calibrated = find_calibrated(args.directory[0])
+    calibrated = find_calibrated(args.directory[0], use_targets=args.targets)
     build_table(calibrated, args.table[0])
 
 if __name__ == '__main__':
