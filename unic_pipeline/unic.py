@@ -33,6 +33,7 @@ import argparse
 import sys
 
 from unic_pipeline.data_handler import DataManager
+from unic_pipeline.clean_tasks import cleanup
 import unic_pipeline.argparse_parents as parents
 import unic_pipeline.argparse_actions as actions
 
@@ -61,8 +62,11 @@ def prep_data(args: argparse.Namespace) -> None:
 def dirty_cubes(args: argparse.Namespace):
     """Calculate dirty cubes."""
     for data in args.data.values():
-        data.array_imaging('dirty_cubes', '', nproc=args.nproc[0],
-                           per_spw=True, get_spectra=True, niter=0)
+        imagenames = data.array_imaging('dirty_cubes', '', nproc=args.nproc[0],
+                                        per_spw=True, get_spectra=True,
+                                        niter=0)
+        args.log.info('Cleaning up dirty cube products')
+        cleanup(imagenames)
 
 def continuum(args: argparse.Namespace):
     """Calculate and image the continuum visibilities."""

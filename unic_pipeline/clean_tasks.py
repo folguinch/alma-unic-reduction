@@ -34,6 +34,16 @@ def recommended_auto_masking(array: str) -> Dict:
 
     return params
 
+def cleanup(imagenames: Sequence[Path]):
+    """Delete all imaging products.
+
+    It does not delete `.fits` files.
+    """
+    for imagename in imagenames:
+        for product in imagename.parent.glob(f'{imagename.stem}.*'):
+            if product.is_dir():
+                os.system(f'rm -rf {product}')
+
 def get_tclean_params(
     config: SectionProxy,
     required_keys: Sequence[str] = ('cell', 'imsize'),
