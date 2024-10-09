@@ -974,7 +974,7 @@ class FieldManager:
                       export_fits: bool = False,
                       plot_results: bool = False,
                       compare_to: Optional[str] = None,
-                      **tclean_args):
+                      **tclean_args) -> List[Path]:
         """Image an array.
 
         Args:
@@ -997,6 +997,7 @@ class FieldManager:
             arrays = self.data_handler.keys()
 
         # Iterate over selected arrays
+        imagenames = []
         for array in arrays:
             # Environment variables
             handler = self.data_handler[array]
@@ -1014,16 +1015,17 @@ class FieldManager:
 
             # Clean cases
             if per_spw:
-                handler.clean_per_spw(section,
-                                      uvtype,
-                                      outdir=outdir,
-                                      nproc=nproc,
-                                      auto_threshold=auto_threshold,
-                                      resume=self.resume,
-                                      export_fits=export_fits,
-                                      get_spectra=get_spectra,
-                                      plot_results=plot_results,
-                                      **tclean_args)
+                aux = handler.clean_per_spw(section,
+                                            uvtype,
+                                            outdir=outdir,
+                                            nproc=nproc,
+                                            auto_threshold=auto_threshold,
+                                            resume=self.resume,
+                                            export_fits=export_fits,
+                                            get_spectra=get_spectra,
+                                            plot_results=plot_results,
+                                            **tclean_args)
+                imagenames += aux
             else:
                 imagename = handler.clean_data(section,
                                                uvtype,
@@ -1033,6 +1035,7 @@ class FieldManager:
                                                export_fits=export_fits,
                                                plot_results=plot_results,
                                                **tclean_args)
+                imagenames.append(imagename)
 
                 if compare_to is not None:
                     self.log.info('Plotting comparison between %s and %s',
@@ -1048,6 +1051,8 @@ class FieldManager:
                                                       '.png'))
                     plotname = handler.uvdata.parent / 'plots' / plotname.name
                     plot_comparison(comp_image, imagename, plotname)
+
+        return imagenames
 
     def contsub_visibilities(self,
                              dirty_images: bool = False,
