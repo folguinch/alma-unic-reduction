@@ -533,7 +533,7 @@ class ArrayHandler:
             exportfits(imagename=f'{realimage}', fitsimage=f'{fitsimage}',
                        overwrite=True)
             if kwargs.get('pbcor'):
-                pbcorimage = realimage.with_suffix('{realimage.suffix}.pbcor')
+                pbcorimage = realimage.with_suffix(f'{realimage.suffix}.pbcor')
                 pbcorfits = pbcorimage.with_suffix('.pbcor.fits')
                 exportfits(imagename=f'{pbcorimage}', fitsimage=f'{pbcorfits}',
                            overwrite=True)
