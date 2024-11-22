@@ -76,7 +76,7 @@ def continuum(args: argparse.Namespace):
 def contsub(args: argparse.Namespace):
     """Calculate the continuum subtracted visibilities."""
     for data in args.data.values():
-        data.contsub_visibilities(dirty_images=True, nproc=args.nproc[0])
+        data.contsub_visibilities(dirty_images=False, nproc=args.nproc[0])
 
 def combine_arrays(args: argparse.Namespace):
     """Combine 7m and 12m data."""
@@ -86,7 +86,7 @@ def combine_arrays(args: argparse.Namespace):
             continue
         data.combine_arrays(('7m', '12m'), default_config=args.defconfig[0],
                             datadir=args.basedir[0], control_images=True,
-                            nproc=args.nproc[0])
+                            dirty_images=False, nproc=args.nproc[0])
 
 def clean_continuum(args: argparse.Namespace):
     """Clean continuum for different robust and arrays."""

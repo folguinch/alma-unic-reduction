@@ -1069,13 +1069,14 @@ class FieldManager:
             self.log.info('Computing contsub visibilities for array: %s', array)
             handler.contsub(resume=self.resume, plot_selection=True)
             self.log.info('-' * 80)
-        self.log.info('=' * 80)
 
         # Compute dirty
         if dirty_images:
             self.log.info('Producing dirty images for contsub')
-            self.array_imaging('dirty_cubes', 'uvcontsub', nproc=nproc,
-                               per_spw=True, get_spectra=get_spectra, niter=0)
+            imagenames = self.array_imaging('dirty_cubes', 'uvcontsub',
+                                            nproc=nproc, per_spw=True,
+                                            get_spectra=get_spectra, niter=0)
+        self.log.info('=' * 80)
 
     def continuum_visibilities(self,
                                control_image: bool = False,
@@ -1107,6 +1108,7 @@ class FieldManager:
                        default_config: Optional[Path] = None,
                        datadir: Optional[Path] = None,
                        control_images: bool = False,
+                       dirty_images: bool = False,
                        nproc: int = 5):
         """Combine uv data of different arrays."""
         # Useful values
@@ -1142,7 +1144,7 @@ class FieldManager:
 
             # Control images
             if control_images:
-                if uvtype == 'uvcontsub':
+                if uvtype == 'uvcontsub' and dirty_images:
                     self.array_imaging('dirty_cubes',
                                        uvtype,
                                        arrays=[new_array],
