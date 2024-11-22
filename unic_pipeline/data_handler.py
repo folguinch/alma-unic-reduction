@@ -486,9 +486,12 @@ class ArrayHandler:
         if do_clean:
             uvdata = self.get_uvname(uvtype)
             if auto_threshold and 'threshold' not in kwargs:
-                nsigma = config.get('thresh_nsigma', fallback='3')
-                nsigma = tuple(map(float, nsigma.split(',')))
-                self.log.info('Cleaning down to %s sigma', nsigma)
+                nsigma = config.get('thresh_nsigma', fallback=None)
+                if nsigma is not None:
+                    nsigma = tuple(map(float, nsigma.split(',')))
+                    self.log.info('Cleaning down to %s sigma', nsigma)
+                elif 'nsigma' in kwargs:
+                    self.log.info('Using tclean nsigma=%f', kwargs['nsigma'])
                 if (specmode == 'cube' and
                     config.getboolean('use_multi_clean')):
                     imagename, kwargs['threshold'] = cube_multi_clean(
@@ -512,11 +515,12 @@ class ArrayHandler:
                         nsigma=nsigma,
                         log=self.log,
                     )
-                self.log.info('Automatic final threshold: %s',
-                              kwargs['threshold'])
-                self.update_config(write=True,
-                                   **{section:
-                                      {threshold_opt: kwargs['threshold']}})
+                if nsigma is not None:
+                    self.log.info('Automatic final threshold: %s',
+                                  kwargs['threshold'])
+                    self.update_config(write=True,
+                                       **{section:
+                                          {threshold_opt: kwargs['threshold']}})
             elif 'threshold' in kwargs:
                 self.log.info('Threshold for clean: %s', kwargs['threshold'])
                 tclean_parallel(uvdata, imagename.with_name(imagename.stem),
