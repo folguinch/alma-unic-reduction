@@ -933,7 +933,7 @@ class FieldManager:
         split_ms(vis=f'{uvdata}', outputvis=f'{splitvis}', field=self.name,
                  datacolumn=datacolumn, spw=spw)
 
-    def concat_data(self):
+    def concat_data(self, cleanup: bool = False):
         """Concatenate stored data per array."""
         for array, handler in self.data_handler.items():
             # Prepare concat input
@@ -958,6 +958,8 @@ class FieldManager:
                 self.log.info('MSs to concat: %s', vis)
                 self.log.info('Concatenating MSs to: %s', concatvis)
                 concat(vis=vis, concatvis=f'{concatvis}')
+                if cleanup:
+                    os.system('rm -rf ' + ' '.join(vis))
 
             # Update handler spws
             handler.update_spws()
@@ -1180,6 +1182,7 @@ class DataManager(Dict):
                     log: 'logging.Logger',
                     datadir: Path = Path('./'),
                     cont: Optional[Sequence[Path]] = None,
+                    cleanup: bool = False,
                     resume: bool = False):
         """Generate a `DataManager` from input MSs.
 
@@ -1192,6 +1195,7 @@ class DataManager(Dict):
           log: A `logging` object.
           datadir: Optional; Where the data generated will be stored.
           cont: Optional; A list of continuum files for each `uvdata`.
+          cleanup: Optional; Delete intermediate eb data.
           resume: Optional; Continue from where it was left?
         """
         # First pass: iterate over uvdata and define fields
@@ -1232,11 +1236,11 @@ class DataManager(Dict):
                 fields[field] = field_info
 
         # Second pass: iterate over fields to concatenate data and save config
-        # files
+        # files.
         for name, field in fields.items():
             log.info('=' * 80)
             log.info('Concatenating field: %s', name)
-            field.concat_data()
+            field.concat_data(cleanup=cleanup)
             log.info('Writing configs')
             field.write_configs()
 

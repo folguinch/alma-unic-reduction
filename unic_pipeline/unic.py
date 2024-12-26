@@ -54,6 +54,7 @@ def prep_data(args: argparse.Namespace) -> None:
             args.log,
             datadir=args.basedir[0],
             cont=args.cont,
+            cleanup=True,
             resume='split' in args.skip or args.resume,
         )
     else:
