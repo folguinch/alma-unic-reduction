@@ -51,7 +51,7 @@ def get_tclean_params(
     float_keys: Sequence[str]  = ('robust', 'pblimit', 'pbmask',
                                   'sidelobethreshold', 'noisethreshold',
                                   'minbeamfrac', 'lownoisethreshold',
-                                  'negativethreshold'),
+                                  'negativethreshold', 'nsigma'),
     int_keys: Sequence[str] = ('niter', 'chanchunks', 'nterms'),
     bool_keys: Sequence[str] = ('interactive', 'parallel', 'pbcor',
                                 'perchanweightdensity'),
@@ -134,7 +134,7 @@ def auto_thresh_clean(vis: Path,
                       nproc: int,
                       tclean_args: dict,
                       thresh_niter: int = 2,
-                      nsigma: Tuple[float] = (3.,),
+                      nsigma: Optional[Tuple[float]] = None,
                       sigfig: int = 3,
                       log: Optional['logging.Logger'] = None) -> str:
     """Find a threshold value from a dirty image.
@@ -149,17 +149,59 @@ def auto_thresh_clean(vis: Path,
       sigfig: Optional; Number of significant figures.
       log: Optional; Logging function.
     """
-    thresh = None
-    for niter in range(thresh_niter):
-        # Clean
-        if thresh is None:
-            # Compute dirty at niter = 0
-            clean_args = tclean_args | {'niter': 0}
-        tclean_parallel(vis, imagename.with_name(imagename.stem), nproc,
-                        clean_args, log=log)
+    # Iterate if nsigma is given
+    if nsigma is not None and 'nsigma' not in tclean_args:
+        thresh = None
+        for niter in range(thresh_niter):
+            # Clean
+            if thresh is None:
+                # Compute dirty at niter = 0
+                clean_args = tclean_args | {'niter': 0}
+            tclean_parallel(vis, imagename.with_name(imagename.stem), nproc,
+                            clean_args, log=log)
 
-        # Export fits
-        fitsimage = f'{imagename}_niter{niter}.fits'
+            # Export fits
+            fitsimage = f'{imagename}_niter{niter}.fits'
+            if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
+                exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
+                           overwrite=True)
+            else:
+                exportfits(f'{imagename}', fitsimage=f'{fitsimage}',
+                           overwrite=True)
+            image = fits.open(fitsimage)[0]
+            data = image.data * u.Unit(image.header['BUNIT'])
+
+            # Get rms and threshold
+            if len(nsigma) == 1:
+                nrms = nsigma[0]
+            else:
+                nrms = nsigma[niter]
+            thresh = nrms * mad_std(data, ignore_nan=True)
+            thresh = round_sigfig(thresh.to(u.mJy/u.beam), sigfig)
+
+            # Update clean parameters for next iteration
+            if log is not None:
+                log.info('Iteration %i threshold: %s', niter+1, thresh)
+            clean_args = {'niter': tclean_args.get('niter', 100000),
+                          'threshold': f'{thresh.value}{thresh.unit*u.beam}',
+                          'calcpsf': False,
+                          'calcres': False}
+            clean_args = tclean_args | clean_args
+    elif 'nsigma' in tclean_args:
+        clean_args = tclean_args
+        clean_args.setdefault('niter', 100000)
+    else:
+        raise ValueError('Cannot determine threshold')
+
+    # Final clean
+    tclean_parallel(vis, imagename.with_name(imagename.stem), nproc,
+                    clean_args, log=log)
+
+    # Export final image if nsigma is None to estimate the threshold
+    if nsigma is None:
+        if log is not None:
+            log.info('Estimating threshold from image')
+        fitsimage = f'{imagename}.fits'
         if clean_args.get('deconvolver', 'hogbom') == 'mtmfs':
             exportfits(f'{imagename}.tt0', fitsimage=f'{fitsimage}',
                        overwrite=True)
@@ -170,25 +212,11 @@ def auto_thresh_clean(vis: Path,
         data = image.data * u.Unit(image.header['BUNIT'])
 
         # Get rms and threshold
-        if len(nsigma) == 1:
-            nrms = nsigma[0]
-        else:
-            nrms = nsigma[niter]
-        thresh = nrms * mad_std(data, ignore_nan=True)
+        thresh = clean_args['nsigma'] * mad_std(data, ignore_nan=True)
         thresh = round_sigfig(thresh.to(u.mJy/u.beam), sigfig)
 
-        # Update clean parameters for next iteration
-        if log is not None:
-            log.info('Iteration %i threshold: %s', niter+1, thresh)
-        clean_args = {'niter': tclean_args.get('niter', 100000),
-                      'threshold': f'{thresh.value}{thresh.unit*u.beam}',
-                      'calcpsf': False,
-                      'calcres': False}
-        clean_args = tclean_args | clean_args
-
-    # Final clean
-    tclean_parallel(vis, imagename.with_name(imagename.stem), nproc,
-                    clean_args, log=log)
+        # Remove fits image to avoid confussion
+        os.system(f"rm -rf {fitsimage}")
 
     return f'{thresh.value}{thresh.unit*u.beam}'
 
@@ -205,7 +233,7 @@ def cube_multi_clean(vis: Path,
                      array: str,
                      tclean_args: dict,
                      thresh_niter: int = 2,
-                     nsigma: Tuple[float] = (3.,),
+                     nsigma: Optional[Tuple[float]] = None,
                      sigfig: int = 3,
                      plot_results: bool = False,
                      resume: bool = False,
