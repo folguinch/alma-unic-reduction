@@ -469,7 +469,7 @@ class ArrayHandler:
             kwargs['usemask'] = 'user'
         else:
             realimage = imagename
-        self.info.debug('Real image name: %s', realimage)
+        self.log.debug('Real image name: %s', realimage)
         if realimage.exists() and resume:
             self.log.info('Skipping imaging for: %s', realimage)
             do_clean = False
@@ -495,6 +495,7 @@ class ArrayHandler:
                     self.log.info('Using tclean nsigma=%f', kwargs['nsigma'])
                 if (specmode == 'cube' and
                     config.getboolean('use_multi_clean')):
+                    self.log.info('Using cube_multi_clean')
                     imagename, kwargs['threshold'] = cube_multi_clean(
                         uvdata,
                         imagename,
@@ -508,6 +509,7 @@ class ArrayHandler:
                     )
                     kwargs['usemask'] = 'user'
                 else:
+                    self.log.info('Using auto_thresh_clean')
                     kwargs['threshold'] = auto_thresh_clean(
                         uvdata,
                         imagename,
