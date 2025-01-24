@@ -469,6 +469,7 @@ class ArrayHandler:
             kwargs['usemask'] = 'user'
         else:
             realimage = imagename
+        self.info.debug('Real image name: %s', realimage)
         if realimage.exists() and resume:
             self.log.info('Skipping imaging for: %s', realimage)
             do_clean = False
@@ -1021,6 +1022,7 @@ class FieldManager:
 
             # Clean cases
             if per_spw:
+                self.log.info('Cleaning per SPW')
                 aux = handler.clean_per_spw(section,
                                             uvtype,
                                             outdir=outdir,
@@ -1033,6 +1035,7 @@ class FieldManager:
                                             **tclean_args)
                 imagenames += aux
             else:
+                self.log.info('Cleaning %s', uvtype)
                 imagename = handler.clean_data(section,
                                                uvtype,
                                                nproc=nproc,
