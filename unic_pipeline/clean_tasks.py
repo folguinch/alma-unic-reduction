@@ -301,10 +301,12 @@ def cube_multi_clean(vis: Path,
     # Second clean
     clean_args = {'deconvolver': 'multiscale',
                   'scales': tclean_args.get('scales', [0,5,15]),
-                  'threshold': threshold,
                   'usemask': 'user',
                   'mask': f'{mask}'}
     clean_args = tclean_args | clean_args
+    clean_args.setdefault('niter', 100000)
+    if 'nsigma' not in clean_args:
+        clean_args['threshold'] = threshold
     tclean_parallel(vis, final_imagename.with_name(final_imagename.stem), nproc,
                     clean_args, log=log)
 
