@@ -42,7 +42,10 @@ def plot_imaging_products(imagename: 'pathlib.Path',
             fitsimage = imagename.with_suffix(f'{imtype}.fits')
             masks.append(fitsimage)
         if not fitsimage.exists():
-            exportfits(imagename=f'{imname}', fitsimage=f'{fitsimage}')
+            try:
+                exportfits(imagename=f'{imname}', fitsimage=f'{fitsimage}')
+            except AssertionError:
+                del masks[-1]
 
     # Plot data
     if chans is None:
