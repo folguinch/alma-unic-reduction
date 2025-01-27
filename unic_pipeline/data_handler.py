@@ -475,6 +475,7 @@ class ArrayHandler:
             do_clean = False
             kwargs['threshold'] = config.get(threshold_opt, fallback=None)
             self.log.info('Recovered threshold: %s', kwargs['threshold'])
+            imagename = realimage.with_suffix('.image')
         elif realimage.exists() and not resume:
             self.log.warning('Deleting image and products: %s', realimage)
             if (kwargs['specmode'] == 'cube' and
@@ -547,7 +548,7 @@ class ArrayHandler:
 
 
         # Plot images
-        if plot_results:
+        if plot_results and imagename.exists():
             outdir = self.uvdata.parent / 'plots'
             outdir.mkdir(exist_ok=True)
             masking = kwargs.get('usemask')
@@ -557,7 +558,8 @@ class ArrayHandler:
                 plotname = outdir / plotname.name
                 chans = plot_imaging_spectra(imagename, plotname,
                                              threshold=kwargs.get('threshold'),
-                                             masking=masking)
+                                             masking=masking,
+                                             resume=resume)
             else:
                 chans = None
             self.log.info('Plotting imaging results')
@@ -567,7 +569,8 @@ class ArrayHandler:
                                   kwargs['deconvolver'],
                                   masking,
                                   threshold=kwargs.get('threshold'),
-                                  chans=chans)
+                                  chans=chans,
+                                  resume=resume)
 
         return realimage
 

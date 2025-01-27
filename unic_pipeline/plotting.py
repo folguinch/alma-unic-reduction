@@ -15,7 +15,8 @@ def plot_imaging_products(imagename: 'pathlib.Path',
                           deconvolver: str,
                           mask_type: str,
                           threshold: Optional[str] = None,
-                          chans: Optional[Dict[str, int]] = None):
+                          chans: Optional[Dict[str, int]] = None,
+                          resume: bool = False):
     """Plot imaging results."""
     # Set image types
     imtypes = ('.image', '.residual')
@@ -51,6 +52,16 @@ def plot_imaging_products(imagename: 'pathlib.Path',
     if chans is None:
         chans = {'dummy': None}
     for description, chan in chans.items():
+        # Verify if file exists
+        if chan is not None:
+            plotname = filename.with_suffix((f'.chan{chan}'
+                                             f'.{description}'
+                                             f'{filename.suffix}'))
+        else:
+            plotname = filename
+        if resume and plotname.exists():
+            continue
+        
         fig, axs = plt.subplots(ncols=2, sharex=True, sharey=True,
                                 figsize=(15, 8))
         for i, (ax, imname) in enumerate(zip(axs, images)):
@@ -105,12 +116,6 @@ def plot_imaging_products(imagename: 'pathlib.Path',
                            colors=color, origin='lower', linewidths=1)
 
         # Save image
-        if chan is not None:
-            plotname = filename.with_suffix((f'.chan{chan}'
-                                             f'.{description}'
-                                             f'{filename.suffix}'))
-        else:
-            plotname = filename
         fig.savefig(plotname, bbox_inches='tight')
         plt.close()
 
@@ -198,7 +203,8 @@ def plot_comparison(reference: 'pathlib.Path',
 def plot_imaging_spectra(imagename: 'pathlib.Path',
                          plotname: 'pathlib.Path',
                          threshold: Optional[str] = None,
-                         masking: Optional[str] = None) -> Dict[str, int]:
+                         masking: Optional[str] = None,
+                         resume: bool = False) -> Dict[str, int]:
     """Plot spectra and mask."""
     # Images to plot
     freq, flux, loc = extract_spectrum(imagename)
@@ -249,6 +255,8 @@ def plot_imaging_spectra(imagename: 'pathlib.Path',
             selection = None
 
         # Plot
+        if resume and filename.exists():
+            continue
         if threshold is not None:
             hline = u.Quantity(threshold) / u.beam
             title += f' - Threshold: {threshold}'
