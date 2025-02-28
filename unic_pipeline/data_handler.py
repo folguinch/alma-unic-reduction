@@ -1042,7 +1042,6 @@ class FieldManager:
                                             outdir=outdir,
                                             nproc=nproc,
                                             auto_threshold=auto_threshold,
-                                            spws_to_clean=spws_to_clean,
                                             resume=self.resume,
                                             export_fits=export_fits,
                                             get_spectra=get_spectra,
