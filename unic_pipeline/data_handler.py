@@ -621,7 +621,7 @@ class ArrayHandler:
         for i, spw in enumerate(self.spws):
             self.log.info('.' * 80)
             if spws_to_clean is not None and i not in spws_to_clean:
-                self.lof.info('Skipping SPW: %i (%s)', i, spw)
+                self.log.info('Skipping SPW: %i (%s)', i, spw)
                 continue
             self.log.info('Cleaning SPW: %i (%s)', i, spw)
             # Clean args
