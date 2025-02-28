@@ -610,9 +610,19 @@ class ArrayHandler:
             self.log.warning('Missing SPWs, will read from current uvtype')
             self.update_spws(uvtype)
 
+        # Specify spws to clean
+        if spws_to_clean := self.config.get(section, 'spws_to_clean',
+                                            fallback=None):
+            spws_to_clean = tuple(map(lambda x: int(x.strip()),
+                                      spws_to_clean.split(',')))
+
         # Iterate over spws
         imagenames = []
         for i, spw in enumerate(self.spws):
+            self.log.info('.' * 80)
+            if spws_to_clean is not None and i not in spws_to_clean:
+                self.lof.info('Skipping SPW: %i (%s)', i, spw)
+            self.log.info('Cleaning SPW: %i (%s)', i, spw)
             # Clean args
             robust = self.config.get(section, 'robust',
                                      vars=tclean_args, fallback=0.5)
@@ -622,8 +632,6 @@ class ArrayHandler:
             threshold_opt = f'threshold_spw{i}_robust{robust}'
 
             # Check for files
-            self.log.info('.' * 80)
-            self.log.info('Cleaning SPW: %i (%s)', i, spw)
             #trigger = True
             #if imagename.exists() and resume:
             #    self.log.info('Skipping cube for spw %i', i)
@@ -1033,6 +1041,7 @@ class FieldManager:
                                             outdir=outdir,
                                             nproc=nproc,
                                             auto_threshold=auto_threshold,
+                                            spws_to_clean=spws_to_clean,
                                             resume=self.resume,
                                             export_fits=export_fits,
                                             get_spectra=get_spectra,
