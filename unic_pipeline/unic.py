@@ -160,11 +160,11 @@ def unic(args: Optional[List] = None) -> None:
                         default=[],
                         help='Steps to skip')
     # To be implemented
-    #group = parser.add_mutually_exclusive_group()
-    #group.add_argument('--continuum', action='store_true',
-    #                   help='Image only the continuum')
-    #group.add_argument('--cubes', action='store_true',
-    #                   help='Image only the cubes')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--continuum', action='store_true',
+                       help='Image only the continuum')
+    group.add_argument('--cubes', action='store_true',
+                       help='Image only the cubes')
     parser.add_argument('--field', nargs=1, default=None,
                         help='Field name')
     parser.add_argument('--resume', action='store_true',
@@ -185,6 +185,14 @@ def unic(args: Optional[List] = None) -> None:
     if args is None:
         args = sys.argv[1:]
     args = parser.parse_args(args)
+
+    # Only imaging
+    if args.continuum:
+        args.skip = ('split', 'dirty_cubes', 'continuum', 'contsub',
+                     'combine_arrays', 'clean_cubes')
+    elif args.cubes:
+        args.skip = ('split', 'dirty_cubes', 'continuum', 'contsub',
+                     'combine_arrays', 'clean_cont')
 
     # Run through steps
     for step_name, step in steps.items():
