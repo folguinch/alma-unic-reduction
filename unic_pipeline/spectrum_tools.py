@@ -33,7 +33,7 @@ def extract_spectrum(image: 'pathlib.Path',
 
     # Collapse image
     if loc is None:
-        collapsed = np.sum(cube.unmasked_data[:], axis=0)
+        collapsed = np.nansum(cube.unmasked_data[:], axis=0)
         loc = np.unravel_index(np.nanargmax(collapsed), collapsed.shape)
 
     # Spectrum
