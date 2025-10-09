@@ -643,16 +643,20 @@ class ArrayHandler:
 
             # Run clean
             #if trigger:
-            imagename = self.clean_data(section, uvtype,
-                                        imagename=imagename,
-                                        nproc=nproc,
-                                        auto_threshold=auto_threshold,
-                                        export_fits=export_fits,
-                                        resume=resume,
-                                        threshold_opt=threshold_opt,
-                                        plot_results=plot_results,
-                                        spw=spw,
-                                        **tclean_args)
+            try:
+                imagename = self.clean_data(section, uvtype,
+                                            imagename=imagename,
+                                            nproc=nproc,
+                                            auto_threshold=auto_threshold,
+                                            export_fits=export_fits,
+                                            resume=resume,
+                                            threshold_opt=threshold_opt,
+                                            plot_results=plot_results,
+                                            spw=spw,
+                                            **tclean_args)
+            except AssertionError:
+                self.log.warning('Cannot clean spw=%s', spw)
+                continue
             imagenames.append(imagename)
 
             # Extract spectrum
