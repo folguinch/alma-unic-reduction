@@ -50,7 +50,9 @@ def find_near_exact_denominator(num: int, den: int,
             inc = -1
         return find_near_exact_denominator(num, den + inc, direction=direction)
 
-def get_spw_start(uvdata: 'pathlib.Path', spws: str):
+def get_spw_start(uvdata: 'pathlib.Path',
+                  spws: str,
+                  width: Optional[str] = None):
     """Find the common range for the same spw in different EBs."""
     mstool = ms()
     mstool.open(f'{uvdata}')
@@ -65,12 +67,26 @@ def get_spw_start(uvdata: 'pathlib.Path', spws: str):
         widths += [np.abs(freqs[0] - freqs[1])]
     start = max(starts)
     end = min(ends)
-    nchan = np.abs(end - start)/np.mean(widths)
+    if width is None:
+        width_val = np.mean(widths)
+        width_str = (width_val * u.Hz).to(u.kHz)
+        width_str = f'{width_str.value}{width_str.unit}'
+    else:
+        width_str = width
+        if 'm/s' in width:
+            ref_freq = metadata.reffreq(int(spws.split(',')[0])) * u.Hz
+            freq_to_vel = u.doppler_radio(ref_freq)
+            print(ref_freq)
+            width_val = u.Quantity(width).to(u.Hz, equivalencies=freq_to_vel)
+            width_val = np.abs(width_val - ref_freq)
+            width_val = width_val.to(u.Hz).value
+        else:
+            width_val = u.Quantity(width).to(u.Hz).value
+    nchan = np.abs(end - start)/width_val
     nchan = int(np.floor(nchan))
     start = (start * u.Hz).to(u.GHz)
-    print(spws, starts, ends, start, end, widths)
 
-    return f'{start.value}{start.unit}', nchan
+    return f'{start.value}{start.unit}', nchan, width_str
 
 def extrema_ms(uvdata: 'pathlib.Path',
                spw: Optional[int] = None) -> Tuple[u.Quantity]:

@@ -434,11 +434,15 @@ class ArrayHandler:
             if (uvtype == 'uvcontsub' and
                 'start' not in kwargs and 
                 'nchan' not in kwargs):
-                start, nchan = get_spw_start(self.get_uvname(uvtype),
-                                             kwargs['spw'])
+                start, nchan, width = get_spw_start(self.get_uvname(uvtype),
+                                                    kwargs['spw'],
+                                                    width=kwargs.get('width'))
                 kwargs['start'] = start
                 kwargs['nchan'] = nchan
-                self.log('Start and nchan form data: %s (%i)', start, nchan)
+                kwargs['width'] = width
+                self.log.info('Number of channels: %i', nchan)
+                self.log.info('Starting channel: %s', start)
+                self.log.info('Channel width: %s', width)
         else:
             raise ValueError(f'Type {uvtype} not recognized')
         deconvolver = kwargs.setdefault('deconvolver', 'hogbom')
