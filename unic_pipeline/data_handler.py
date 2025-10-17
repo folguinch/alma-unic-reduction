@@ -431,8 +431,7 @@ class ArrayHandler:
         elif uvtype in ['', 'uvcontsub']:
             specmode = kwargs.setdefault('specmode', 'cube')
             kwargs.setdefault('outframe', 'LSRK')
-            if (uvtype == 'uvcontsub' and
-                'start' not in kwargs and 
+            if ('start' not in kwargs and 
                 'nchan' not in kwargs):
                 start, nchan, width = get_spw_start(self.get_uvname(uvtype),
                                                     kwargs['spw'],
