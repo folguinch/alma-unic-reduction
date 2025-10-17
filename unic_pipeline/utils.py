@@ -77,9 +77,9 @@ def get_spw_start(uvdata: 'pathlib.Path',
             ref_freq = ref_freq['m0']['value'] * u.Unit(ref_freq['m0']['unit'])
             freq_to_vel = u.doppler_radio(ref_freq)
             freqs = freqs.to(spectral_unit, equivalencies=freq_to_vel)
-        starts.insert(0, np.min(freqs))
-        ends.insert(0, np.max(freqs))
-        widths.insert(0, np.abs(freqs[0] - freqs[1]))
+        starts = starts.insert(0, np.min(freqs))
+        ends = ends.insert(0, np.max(freqs))
+        widths = widths.insert(0, np.abs(freqs[0] - freqs[1]))
     start = np.max(starts)
     end = np.min(ends)
 
