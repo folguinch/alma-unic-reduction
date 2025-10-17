@@ -54,39 +54,44 @@ def get_spw_start(uvdata: 'pathlib.Path',
                   spws: str,
                   width: Optional[str] = None):
     """Find the common range for the same spw in different EBs."""
+    # Check width unit
+    if width is not None:
+        width_qa = u.Quantity(width)
+        spectral_unit = width_qa.unit
+    else:
+        spectral_unit = u.Hz
+
+    # Load ms information
     mstool = ms()
     mstool.open(f'{uvdata}')
     metadata = mstool.metadata()
-    starts = []
-    ends = []
-    widths = []
+    
+    # Iterate over spws
+    starts = np.array([]) * spectral_unit
+    ends = np.array([]) * spectral_unit
+    widths = np.array([]) * spectral_unit
     for spw in map(int, spws.split(',')):
-        freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK')
-        starts += [np.min(freqs)]
-        ends += [np.max(freqs)]
-        widths += [np.abs(freqs[0] - freqs[1])]
-    start = max(starts)
-    end = min(ends)
-    if width is None:
-        width_val = np.mean(widths)
-        width_str = (width_val * u.Hz).to(u.kHz)
-        width_str = f'{width_str.value}{width_str.unit}'
-    else:
-        width_str = width
-        if 'm/s' in width:
-            ref_freq = metadata.reffreq(int(spws.split(',')[0]))
+        freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK') * u.Hz
+        if spectral_unit.is_equivalent(u.m/u.s):
+            ref_freq = metadata.reffreq(spw)
             ref_freq = ref_freq['m0']['value'] * u.Unit(ref_freq['m0']['unit'])
             freq_to_vel = u.doppler_radio(ref_freq)
-            width_val = u.Quantity(width).to(u.Hz, equivalencies=freq_to_vel)
-            width_val = np.abs(width_val - ref_freq)
-            width_val = width_val.to(u.Hz).value
-        else:
-            width_val = u.Quantity(width).to(u.Hz).value
-    nchan = np.abs(end - start)/width_val
-    nchan = int(np.floor(nchan))
-    start = (start * u.Hz).to(u.GHz)
+            freqs = freqs.to(spectral_unit, equivalencies=freq_to_vel)
+        starts.insert(0, np.min(freqs))
+        ends.insert(0, np.max(freqs))
+        widths.insert(0, np.abs(freqs[0] - freqs[1]))
+    start = np.max(starts)
+    end = np.min(ends)
 
-    return f'{start.value}{start.unit}', nchan, width_str
+    # Set tclean values
+    if width is None:
+        width_qa = np.mean(widths)
+        width = f'{width_qa.value}{width_qa.unit}'
+    nchan = np.abs(end - start)/width_qa
+    nchan = int(np.floor(nchan.to(1).value))
+    start = f'{start.value}{start.unit}'
+
+    return start, nchan, width
 
 def extrema_ms(uvdata: 'pathlib.Path',
                spw: Optional[int] = None) -> Tuple[u.Quantity]:
