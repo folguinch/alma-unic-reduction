@@ -74,9 +74,9 @@ def get_spw_start(uvdata: 'pathlib.Path',
     else:
         width_str = width
         if 'm/s' in width:
-            ref_freq = metadata.reffreq(int(spws.split(',')[0])) * u.Hz
+            ref_freq = metadata.reffreq(int(spws.split(',')[0]))
+            ref_freq = ref_freq['m0']['value'] * u.Unit(ref_freq['m0']['unit'])
             freq_to_vel = u.doppler_radio(ref_freq)
-            print(ref_freq)
             width_val = u.Quantity(width).to(u.Hz, equivalencies=freq_to_vel)
             width_val = np.abs(width_val - ref_freq)
             width_val = width_val.to(u.Hz).value
