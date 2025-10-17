@@ -50,6 +50,28 @@ def find_near_exact_denominator(num: int, den: int,
             inc = -1
         return find_near_exact_denominator(num, den + inc, direction=direction)
 
+def get_spw_start(uvdata: 'pathlib.Path', spws: str):
+    """Find the common range for the same spw in different EBs."""
+    mstool = ms()
+    mstool.open(f'{uvdata}')
+    metadata = mstool.metadata()
+    starts = []
+    ends = []
+    widths = []
+    for spw in map(int, spws.split(',')):
+        freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK')
+        starts += [np.min(freqs)]
+        ends += [np.max(freqs)]
+        widths += [np.abs(freqs[0] - freqs[1])]
+    start = max(starts)
+    end = min(ends)
+    nchan = np.abs(end - start)/np.mean(widths)
+    nchan = int(np.floor(nchan))
+    start = (start * u.Hz).to(u.GHz)
+    print(spws, starts, ends, start, end, widths)
+
+    return f'{start.value}{start.unit}', nchan
+
 def extrema_ms(uvdata: 'pathlib.Path',
                spw: Optional[int] = None) -> Tuple[u.Quantity]:
     """Calculate the frequency range for MS or SPW and longest baseline."""

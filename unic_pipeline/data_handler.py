@@ -15,7 +15,7 @@ import astropy.units as u
 from .utils import (get_spws_indices, validate_step, get_targets, get_array,
                     find_spws, extrema_ms, gaussian_beam,
                     gaussian_primary_beam, round_sigfig, continuum_bins,
-                    flags_from_cont_ranges, clumps_to_casa)
+                    flags_from_cont_ranges, clumps_to_casa, get_spw_start)
 from .clean_tasks import (get_tclean_params, tclean_parallel,
                           recommended_auto_masking, auto_thresh_clean,
                           cube_multi_clean, cube_multi_images)
@@ -431,6 +431,14 @@ class ArrayHandler:
         elif uvtype in ['', 'uvcontsub']:
             specmode = kwargs.setdefault('specmode', 'cube')
             kwargs.setdefault('outframe', 'LSRK')
+            if (uvtype == 'uvcontsub' and
+                'start' not in kwargs and 
+                'nchan' not in kwargs):
+                start, nchan = get_spw_start(self.get_uvname(uvtype),
+                                             kwargs['spw'])
+                kwargs['start'] = start
+                kwargs['nchan'] = nchan
+                self.log('Start and nchan form data: %s (%i)', start, nchan)
         else:
             raise ValueError(f'Type {uvtype} not recognized')
         deconvolver = kwargs.setdefault('deconvolver', 'hogbom')
