@@ -57,9 +57,9 @@ def get_spw_start(uvdata: 'pathlib.Path',
     # Check width unit
     if width is not None:
         width_qa = u.Quantity(width)
-        spectral_unit = width_qa.unit
-    else:
-        spectral_unit = u.Hz
+    #    spectral_unit = width_qa.unit
+    #else:
+    #    spectral_unit = u.Hz
 
     # Load ms information
     mstool = ms()
@@ -72,22 +72,31 @@ def get_spw_start(uvdata: 'pathlib.Path',
     widths = np.array([]) * spectral_unit
     for spw in map(int, spws.split(',')):
         freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK') * u.Hz
-        if spectral_unit.is_equivalent(u.m/u.s):
+        #if spectral_unit.is_equivalent(u.m/u.s):
+        #    ref_freq = metadata.reffreq(spw)
+        #    ref_freq = ref_freq['m0']['value'] * u.Unit(ref_freq['m0']['unit'])
+        #    freq_to_vel = u.doppler_radio(ref_freq)
+        #    freqs = freqs.to(spectral_unit, equivalencies=freq_to_vel)
+        if width is not None and width_qa.unit.is_equivalent(u.m/u.s):
             ref_freq = metadata.reffreq(spw)
             ref_freq = ref_freq['m0']['value'] * u.Unit(ref_freq['m0']['unit'])
             freq_to_vel = u.doppler_radio(ref_freq)
-            freqs = freqs.to(spectral_unit, equivalencies=freq_to_vel)
+            width_qa = width_qa.to(u.Hz, equivalencies=freq_to_vel)
+            width_qa = np.abs(width_qa - ref_freq)
+        else:
+            width_qa = np.abs(freqs[0] - freqs[1])
         starts = starts.insert(0, np.min(freqs))
         ends = ends.insert(0, np.max(freqs))
-        widths = widths.insert(0, np.abs(freqs[0] - freqs[1]))
+        widths = widths.insert(0, width_qa)
     start = np.max(starts)
     end = np.min(ends)
+    width_qa = np.mean(widths)
 
     # Set tclean values
-    if width is None:
-        width_qa = np.mean(widths)
-        width = f'{width_qa.value}{width_qa.unit}'
-    nchan = np.abs(end - start)/width_qa
+    #if width is None:
+    #    width_qa = np.mean(widths)
+    width = f'{width_qa.value}{width_qa.unit}'
+    nchan = np.abs(end - start) / width_qa
     nchan = int(np.floor(nchan.to(1).value))
     start = f'{start.value}{start.unit}'
 
