@@ -67,9 +67,9 @@ def get_spw_start(uvdata: 'pathlib.Path',
     metadata = mstool.metadata()
     
     # Iterate over spws
-    starts = np.array([]) * spectral_unit
-    ends = np.array([]) * spectral_unit
-    widths = np.array([]) * spectral_unit
+    starts = np.array([]) * u.Hz
+    ends = np.array([]) * u.Hz
+    widths = np.array([]) * u.Hz
     for spw in map(int, spws.split(',')):
         freqs = mstool.cvelfreqs(spwids=[spw], outframe='LSRK') * u.Hz
         #if spectral_unit.is_equivalent(u.m/u.s):
