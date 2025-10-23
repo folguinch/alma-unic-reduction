@@ -52,7 +52,8 @@ def find_near_exact_denominator(num: int, den: int,
 
 def get_spw_start(uvdata: 'pathlib.Path',
                   spws: str,
-                  width: Optional[str] = None):
+                  width: Optional[str] = None,
+                  log: Callable = print):
     """Find the common range for the same spw in different EBs."""
     # Check width unit
     if width is not None:
@@ -85,6 +86,8 @@ def get_spw_start(uvdata: 'pathlib.Path',
             width_qa = np.abs(width_qa - ref_freq)
         else:
             width_qa = np.abs(freqs[0] - freqs[1])
+        log((f'SPW{spw}: {np.min(freqs)} - {np.max(freqs)} '
+             f'(width {width_qa.value} {width_qa.value})')
         starts = starts.insert(0, np.min(freqs))
         ends = ends.insert(0, np.max(freqs))
         widths = widths.insert(0, width_qa)
