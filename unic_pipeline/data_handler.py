@@ -438,15 +438,13 @@ class ArrayHandler:
                     self.log.info('Input width: %s', width)
                 start, nchan, width = get_spw_start(self.get_uvname(uvtype),
                                                     kwargs['spw'],
-                                                    width=width,
-                                                    log=self.log.info)
+                                                    width=width)
                 kwargs['start'] = start
                 kwargs['nchan'] = nchan
                 kwargs['width'] = width
                 self.log.info('Number of channels: %i', nchan)
                 self.log.info('Starting channel: %s', start)
                 self.log.info('Channel width: %s', width)
-                raise Exception
         else:
             raise ValueError(f'Type {uvtype} not recognized')
         deconvolver = kwargs.setdefault('deconvolver', 'hogbom')
