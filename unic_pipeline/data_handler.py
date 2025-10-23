@@ -446,13 +446,15 @@ class ArrayHandler:
                 self.log.info('Number of channels: %i', nchan)
                 self.log.info('Starting channel: %s', start)
                 self.log.info('Channel width: %s', width)
+                raise Exception
         else:
             raise ValueError(f'Type {uvtype} not recognized')
         deconvolver = kwargs.setdefault('deconvolver', 'hogbom')
         kwargs.setdefault('weighting', 'briggs')
         robust = kwargs.setdefault('robust', 0.5)
         kwargs.setdefault('gridder', 'standard')
-        kwargs.setdefault('niter', 100000)
+        #kwargs.setdefault('niter', 100000)
+        kwargs.setdefault('niter', 0)
 
         # Recover threshold
         if threshold_opt is None:
