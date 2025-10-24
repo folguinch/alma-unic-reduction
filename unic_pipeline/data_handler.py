@@ -451,8 +451,7 @@ class ArrayHandler:
         kwargs.setdefault('weighting', 'briggs')
         robust = kwargs.setdefault('robust', 0.5)
         kwargs.setdefault('gridder', 'standard')
-        #kwargs.setdefault('niter', 100000)
-        kwargs.setdefault('niter', 0)
+        kwargs.setdefault('niter', 100000)
 
         # Recover threshold
         if threshold_opt is None:
