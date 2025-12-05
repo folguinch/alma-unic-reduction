@@ -156,6 +156,8 @@ def get_array(uvdata: 'pathlib.Path') -> str:
         return '12m'
     elif all(is7m):
         return '7m'
+    elif len(is7m) != 0:
+        return '7m'
     else:
         raise ValueError('Cannot identify array')
 
