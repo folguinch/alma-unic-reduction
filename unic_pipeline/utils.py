@@ -93,7 +93,7 @@ def get_spw_start(uvdata: 'pathlib.Path',
         widths = widths.insert(0, width_hz)
     start = np.max(starts)
     end = np.min(ends)
-    width_qa = np.mean(widths)
+    width_qa = np.max(widths)
 
     # Set tclean values
     #if width is None:
