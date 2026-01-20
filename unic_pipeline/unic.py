@@ -89,11 +89,24 @@ def combine_arrays(args: argparse.Namespace):
                             datadir=args.basedir[0], control_images=True,
                             dirty_images=False, nproc=args.nproc[0])
 
+def continuum_control(args: argparse.Namespace):
+    """Trigger control imaging for the continnum."""
+    for data in args.data.values():
+        data.array_imaging('continuum_control',
+                           'continuum',
+                           nproc=args.nproc[0],
+                           auto_threshold=True,
+                           export_fits=True,
+                           plot_results=True)
+
 def clean_continuum(args: argparse.Namespace):
     """Clean continuum for different robust and arrays."""
-    robust_values = [-2.0, 0.5, 2.0]
+    robust_values_default = '-2.0,0.5,2.0'
     #robust_values = [0.5]
     for data in args.data.values():
+        robust_values = data.config.get('imaging', 'robust_values',
+                                        fallback=robust_values_default)
+        robust_values = map(float, robust_values.split(',')
         for robust in robust_values:
             # Clean data
             if robust == 0.5:
@@ -163,6 +176,8 @@ def unic(args: Optional[List] = None) -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--continuum', action='store_true',
                        help='Image only the continuum')
+    group.add_argument('--continuum_control', action='store_true',
+                       help='Image only the continuum control')
     group.add_argument('--cubes', action='store_true',
                        help='Image only the cubes')
     parser.add_argument('--field', nargs=1, default=None,
@@ -193,6 +208,9 @@ def unic(args: Optional[List] = None) -> None:
     elif args.cubes:
         args.skip = ('split', 'dirty_cubes', 'continuum', 'contsub',
                      'combine_arrays', 'clean_cont')
+    elif args.continuum_control:
+        continuum_control(args)
+        sys.exit()
 
     # Run through steps
     for step_name, step in steps.items():
