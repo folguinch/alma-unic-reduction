@@ -106,7 +106,7 @@ def clean_continuum(args: argparse.Namespace):
     for data in args.data.values():
         robust_values = data.config.get('imaging', 'robust_values',
                                         fallback=robust_values_default)
-        robust_values = map(float, robust_values.split(',')
+        robust_values = map(float, robust_values.split(','))
         for robust in robust_values:
             # Clean data
             if robust == 0.5:
