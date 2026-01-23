@@ -664,9 +664,9 @@ class ArrayHandler:
 
                 # Deal with comparison
                 if compare_to is not None:
-                    comp_image = handler.get_imagename(uvtype,
-                                                       section=compare_to,
-                                                       robust=robust)
+                    comp_image = self.get_imagename(uvtype,
+                                                    section=compare_to,
+                                                    robust=robust)
                     if not comp_image.exists():
                         pass
                     else:
