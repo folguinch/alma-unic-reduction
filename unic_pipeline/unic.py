@@ -120,8 +120,7 @@ def clean_continuum(args: argparse.Namespace):
                            export_fits=True,
                            plot_results=True,
                            compare_to='continuum_control',
-                           robust_values=robust_values_default,
-                           robust=robust)
+                           robust_values=robust_values_default)
 
 def clean_cubes(args: argparse.Namespace):
     """Clean continuum for different robust and arrays."""
