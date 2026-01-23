@@ -109,17 +109,17 @@ def clean_continuum(args: argparse.Namespace):
         #robust_values = map(float, robust_values.split(','))
         #for robust in robust_values:
         # Clean data
-        if robust == 0.5:
-            compare_to = 'continuum_control'
-        else:
-            compare_to = None
+        #if robust == 0.5:
+        #    compare_to = 'continuum_control'
+        #else:
+        #    compare_to = None
         data.array_imaging('continuum',
                            'continuum',
                            nproc=args.nproc[0],
                            auto_threshold=True,
                            export_fits=True,
                            plot_results=True,
-                           compare_to=compare_to,
+                           compare_to='continuum_control',
                            robust_values=robust_values_default,
                            robust=robust)
 
