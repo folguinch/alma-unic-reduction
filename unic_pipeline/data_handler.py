@@ -391,17 +391,17 @@ class ArrayHandler:
 
         return cell, imsize
 
-    def clean_data(self,
-                   section: str,
-                   uvtype: str,
-                   imagename: Optional[Path] = None,
-                   nproc: int = 5,
-                   auto_threshold: bool = False,
-                   export_fits: bool = False,
-                   resume: bool = False,
-                   threshold_opt: Optional[str] = None,
-                   plot_results: bool = False,
-                   **tclean_args) -> Path:
+    def _clean_data(self,
+                    section: str,
+                    uvtype: str,
+                    imagename: Optional[Path] = None,
+                    nproc: int = 5,
+                    auto_threshold: bool = False,
+                    export_fits: bool = False,
+                    resume: bool = False,
+                    threshold_opt: Optional[str] = None,
+                    plot_results: bool = False,
+                    **tclean_args) -> Path:
         """Run tclean on input or stored uvdata.
 
         Arguments given under `tclean_args` replace the values from `config`.
@@ -587,6 +587,93 @@ class ArrayHandler:
                                   resume=resume)
 
         return realimage
+
+    def clean_data(self,
+                   section: str,
+                   uvtype: str,
+                   imagename: Optional[Path] = None,
+                   nproc: int = 5,
+                   auto_threshold: bool = False,
+                   export_fits: bool = False,
+                   resume: bool = False,
+                   threshold_opt: Optional[str] = None,
+                   plot_results: bool = False,
+                   compare_to: Optional[str] = None,
+                   robust_values: Optional[Sequence[float]] = None,
+                   **tclean_args):
+        """Run tclean on input or stored uvdata.
+        
+        The following config options can be used to iterate between `tclean`
+        parameters:
+
+        - `robust_values`: iterate robust values.
+
+        Arguments given under `tclean_args` replace the values from `config`
+        (except for those that will be iterated).
+
+        Args:
+          section: Configuration section.
+          uvtype: Type of uvdata to clean.
+          imagename: Optional; Image directory path.
+          nproc: Optional; Number of processors for parallel clean.
+          auto_threshold: Optional; Calculate threshold from noise in initial
+            dirty image?
+          export_fits: Optional; Export image to FITS file?
+          resume: Optional; Resume where it was left?
+          threshold_opt: Optional; Threshold config option for resume.
+          plot_results: Optional; plot image, residual and masks?
+          compare_to: Optional; Compare image with this execution?
+          robust_values: Optional; Default robust values to iterate.
+          tclean_args: Optional; Additional arguments for tclean.
+
+        Returns:
+          The image file name.
+        """
+        # Values to iterate
+        config = self.config[section]
+        if robust_values := config.get('robust_values', fallback=robust_values):
+            robust_values = map(float, robust_values.split(','))
+
+        # 2 cases
+        if robust_values is None:
+            # Backwards compatibility
+            return self._clean_data(section, uvtype, imagename=imagename,
+                                    nproc=nproc, auto_threshold=auto_threshold,
+                                    export_fits=export_fits, resume=resume,
+                                    threshold_opt=threshold_opt,
+                                    plot_results=plot_results, **tclean_args)
+        else:
+            # Iterate over tclean parameters
+            imagenames = []
+            for robust in robust_values:
+                self.log.info('Using robust: %f', robust)
+                tclean_now = tclean_args | {'robust': robust}
+                imagename = self._clean_data(section,
+                                             uvtype,
+                                             nproc=nproc,
+                                             auto_threshold=auto_threshold,
+                                             resume=resume,
+                                             export_fits=export_fits,
+                                             plot_results=plot_results,
+                                             **tclean_now)
+                imagenames.append(imagenames)
+
+                # Deal with comparison
+                if compare_to is not None:
+                    comp_image = handler.get_imagename(uvtype,
+                                                       section=compare_to,
+                                                       robust=robust)
+                    if not comp_image.exists():
+                        pass
+                    else:
+                        self.log.info('Plotting comparison between %s and %s',
+                                      section, compare_to)
+                        suffix = f'.{section}.compare_{compare_to}.png'
+                        plotname = imagename.with_suffix(suffix)
+                        plotname = self.uvdata.parent / 'plots' / plotname.name
+                        plot_comparison(comp_image, imagename, plotname)
+
+            return imagenames
 
     def clean_per_spw(self,
                       section: str,
@@ -1013,6 +1100,7 @@ class FieldManager:
                       export_fits: bool = False,
                       plot_results: bool = False,
                       compare_to: Optional[str] = None,
+                      robust_values: Optional[Sequence[float]] = None,
                       **tclean_args) -> List[Path]:
         """Image an array.
 
@@ -1029,6 +1117,7 @@ class FieldManager:
           export_fits: Optional; Export image to FITS file?
           plot_results: Optional; Plot image, residual and masks?
           compare_to: Optional; Compare image with this execution?
+          robust_values: Optional; Fallback robust values to iterate.
           tclean_args: Optional; Additional `casatasks.tclean` arguments.
         """
         # Select arrays
@@ -1075,23 +1164,25 @@ class FieldManager:
                                                resume=self.resume,
                                                export_fits=export_fits,
                                                plot_results=plot_results,
+                                               compare_to=compare_to,
+                                               robust_values=robust_values,
                                                **tclean_args)
                 imagenames.append(imagename)
 
-                if compare_to is not None:
-                    self.log.info('Plotting comparison between %s and %s',
-                                  section, compare_to)
-                    if (robust:=tclean_args.get('robust')) is not None:
-                        comp_image = handler.get_imagename(uvtype,
-                                                           section=compare_to,
-                                                           robust=robust)
-                    else:
-                        raise ValueError('Robust parameter needed for name')
-                    plotname = imagename.with_suffix((f'.{section}'
-                                                      f'.compare_{compare_to}'
-                                                      '.png'))
-                    plotname = handler.uvdata.parent / 'plots' / plotname.name
-                    plot_comparison(comp_image, imagename, plotname)
+                #if compare_to is not None:
+                #    self.log.info('Plotting comparison between %s and %s',
+                #                  section, compare_to)
+                #    if (robust:=tclean_args.get('robust')) is not None:
+                #        comp_image = handler.get_imagename(uvtype,
+                #                                           section=compare_to,
+                #                                           robust=robust)
+                #    else:
+                #        raise ValueError('Robust parameter needed for name')
+                #    plotname = imagename.with_suffix((f'.{section}'
+                #                                      f'.compare_{compare_to}'
+                #                                      '.png'))
+                #    plotname = handler.uvdata.parent / 'plots' / plotname.name
+                #    plot_comparison(comp_image, imagename, plotname)
 
         return imagenames
 
