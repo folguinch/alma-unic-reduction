@@ -631,11 +631,15 @@ class ArrayHandler:
         """
         # Values to iterate
         config = self.config[section]
-        if robust_values := config.get('robust_values', fallback=robust_values):
-            robust_values = map(float, robust_values.split(','))
+        if robust_vals := config.get('robust_values', fallback=None):
+            robust_vals = map(float, robust_vals.split(','))
+            self.log.info('Robust values from config: %s', robust_vals)
+        elif robust_values is not None:
+            robust_vals = robust_values
+            self.log.info('Robust values: %s', robust_vals)
 
         # 2 cases
-        if robust_values is None:
+        if robust_vals is None:
             # Backwards compatibility
             return self._clean_data(section, uvtype, imagename=imagename,
                                     nproc=nproc, auto_threshold=auto_threshold,
@@ -645,7 +649,7 @@ class ArrayHandler:
         else:
             # Iterate over tclean parameters
             imagenames = []
-            for robust in robust_values:
+            for robust in robust_vals:
                 self.log.info('Using robust: %f', robust)
                 tclean_now = tclean_args | {'robust': robust}
                 imagename = self._clean_data(section,
