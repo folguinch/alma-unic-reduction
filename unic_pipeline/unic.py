@@ -102,17 +102,7 @@ def continuum_control(args: argparse.Namespace):
 def clean_continuum(args: argparse.Namespace):
     """Clean continuum for different robust and arrays."""
     robust_values_default = [-2.0, 0.5, 2.0]
-    #robust_values = [0.5]
     for data in args.data.values():
-        #robust_values = data.config.get('imaging', 'robust_values',
-        #                                fallback=robust_values_default)
-        #robust_values = map(float, robust_values.split(','))
-        #for robust in robust_values:
-        # Clean data
-        #if robust == 0.5:
-        #    compare_to = 'continuum_control'
-        #else:
-        #    compare_to = None
         data.array_imaging('continuum',
                            'continuum',
                            nproc=args.nproc[0],
