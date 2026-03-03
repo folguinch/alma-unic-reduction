@@ -109,6 +109,7 @@ def clean_continuum(args: argparse.Namespace):
                            auto_threshold=True,
                            export_fits=True,
                            plot_results=True,
+                           resume_imaging=args.resume_imaging,
                            compare_to='continuum_control',
                            robust_values=robust_values_default)
 
@@ -122,6 +123,7 @@ def clean_cubes(args: argparse.Namespace):
                            export_fits=True,
                            per_spw=True,
                            plot_results=True,
+                           resume_imaging=args.resume_imaging,
                            )
 
 def unic(args: Optional[List] = None) -> None:
@@ -173,7 +175,9 @@ def unic(args: Optional[List] = None) -> None:
     parser.add_argument('--field', nargs=1, default=None,
                         help='Field name')
     parser.add_argument('--resume', action='store_true',
-                        help='Skip already created data.')
+                        help='Skip already created data')
+    parser.add_argument('--resume_imaging', action='store_true',
+                        help='Resume imaging')
     parser.add_argument('--uvdata', nargs='+', type=str,
                         action=actions.NormalizePath,
                         help='uv data ms')

@@ -399,6 +399,7 @@ class ArrayHandler:
                     auto_threshold: bool = False,
                     export_fits: bool = False,
                     resume: bool = False,
+                    resume_imaging: bool = False,
                     threshold_opt: Optional[str] = None,
                     plot_results: bool = False,
                     **tclean_args) -> Path:
@@ -415,6 +416,7 @@ class ArrayHandler:
             dirty image?
           export_fits: Optional; Export image to FITS file?
           resume: Optional; Resume where it was left?
+          resume_imaging: Optional; Resume from previous iteration?
           threshold_opt: Optional; Threshold config option for resume.
           plot_results: Optional; plot image, residual and masks?
           tclean_args: Optional; Additional arguments for tclean.
@@ -484,19 +486,27 @@ class ArrayHandler:
         else:
             realimage = imagename
         self.log.debug('Real image name: %s', realimage)
-        if realimage.exists() and resume:
-            self.log.info('Skipping imaging for: %s', realimage)
-            do_clean = False
-            kwargs['threshold'] = config.get(threshold_opt, fallback=None)
-            self.log.info('Recovered threshold: %s', kwargs['threshold'])
-            imagename = realimage.with_suffix('.image')
-        elif realimage.exists() and not resume:
-            self.log.warning('Deleting image and products: %s', realimage)
-            if (kwargs['specmode'] == 'cube' and
-                config.getboolean('use_multi_clean')):
-                os.system(f"rm -rf {realimage.with_suffix('.*')}")
-            else:
-                os.system(f"rm -rf {imagename.with_suffix('.*')}")
+        if realimage.exists():
+            if resume_imaging and kwargs['niter'] != 0:
+                self.log.info('Resuming imaging for: %s', realimage)
+                do_clean = True
+                residual = realimage.with_suffix('.residual')
+                psf = realimage.with_suffix('.psf')
+                kwargs['calcres'] = not residual.exists()
+                kwargs['calcpsf'] = not psf.exists()
+            elif resume:
+                self.log.info('Skipping imaging for: %s', realimage)
+                do_clean = False
+                kwargs['threshold'] = config.get(threshold_opt, fallback=None)
+                self.log.info('Recovered threshold: %s', kwargs['threshold'])
+                imagename = realimage.with_suffix('.image')
+            elif not resume:
+                self.log.warning('Deleting image and products: %s', realimage)
+                if (kwargs['specmode'] == 'cube' and
+                    config.getboolean('use_multi_clean')):
+                    os.system(f"rm -rf {realimage.with_suffix('.*')}")
+                else:
+                    os.system(f"rm -rf {imagename.with_suffix('.*')}")
 
         # Run tclean
         if do_clean:
@@ -596,6 +606,7 @@ class ArrayHandler:
                    auto_threshold: bool = False,
                    export_fits: bool = False,
                    resume: bool = False,
+                   resume_imaging: bool = False,
                    threshold_opt: Optional[str] = None,
                    plot_results: bool = False,
                    compare_to: Optional[str] = None,
@@ -620,6 +631,7 @@ class ArrayHandler:
             dirty image?
           export_fits: Optional; Export image to FITS file?
           resume: Optional; Resume where it was left?
+          resume_imaging: Optional; Resume from previous iteration?
           threshold_opt: Optional; Threshold config option for resume.
           plot_results: Optional; plot image, residual and masks?
           compare_to: Optional; Compare image with this execution?
@@ -644,6 +656,7 @@ class ArrayHandler:
             return self._clean_data(section, uvtype, imagename=imagename,
                                     nproc=nproc, auto_threshold=auto_threshold,
                                     export_fits=export_fits, resume=resume,
+                                    resume_imaging=resume_imaging,
                                     threshold_opt=threshold_opt,
                                     plot_results=plot_results, **tclean_args)
         else:
@@ -657,6 +670,7 @@ class ArrayHandler:
                                              nproc=nproc,
                                              auto_threshold=auto_threshold,
                                              resume=resume,
+                                             resume_imaging=resume_imaging,
                                              export_fits=export_fits,
                                              plot_results=plot_results,
                                              **tclean_now)
@@ -685,6 +699,7 @@ class ArrayHandler:
                       outdir: Optional[Path] = None,
                       nproc: int = 5,
                       resume: bool = False,
+                      resume_imaging: bool = False,
                       auto_threshold: bool = False,
                       export_fits: bool = False,
                       get_spectra: bool = False,
@@ -700,6 +715,7 @@ class ArrayHandler:
           outdir: Optional; Output directory path.
           nproc: Optional; Number of processors for parallel clean.
           resume: Optional; Resume where it was left?
+          resume_imaging: Optional; Resume from previous iteration?
           get_spectra: Optional; Extract spectra from cubes per spw?
           auto_threshold: Optional; Calculate threshold from noise in initial
             dirty image?
@@ -737,17 +753,6 @@ class ArrayHandler:
                                            robust=robust)
             threshold_opt = f'threshold_spw{i}_robust{robust}'
 
-            # Check for files
-            #trigger = True
-            #if imagename.exists() and resume:
-            #    self.log.info('Skipping cube for spw %i', i)
-            #    trigger = False
-            #elif imagename.exists() and not resume:
-            #    self.log.warning('Deleting cubes for spw %i', i)
-            #    os.system(f"rm -rf {imagename.with_suffix('.*')}")
-
-            # Run clean
-            #if trigger:
             try:
                 imagename = self.clean_data(section, uvtype,
                                             imagename=imagename,
@@ -755,6 +760,7 @@ class ArrayHandler:
                                             auto_threshold=auto_threshold,
                                             export_fits=export_fits,
                                             resume=resume,
+                                            resume_imaging=resume_imaging,
                                             threshold_opt=threshold_opt,
                                             plot_results=plot_results,
                                             spw=spw,
@@ -1103,6 +1109,7 @@ class FieldManager:
                       get_spectra: bool = False,
                       export_fits: bool = False,
                       plot_results: bool = False,
+                      resume_imaging: bool = False,
                       compare_to: Optional[str] = None,
                       robust_values: Optional[Sequence[float]] = None,
                       **tclean_args) -> List[Path]:
@@ -1120,6 +1127,7 @@ class FieldManager:
           get_spectra: Optional; Extract spectra from cubes per SPW?
           export_fits: Optional; Export image to FITS file?
           plot_results: Optional; Plot image, residual and masks?
+          resume_imaging: Optional; Resume from previous iteration?
           compare_to: Optional; Compare image with this execution?
           robust_values: Optional; Fallback robust values to iterate.
           tclean_args: Optional; Additional `casatasks.tclean` arguments.
@@ -1154,6 +1162,7 @@ class FieldManager:
                                             nproc=nproc,
                                             auto_threshold=auto_threshold,
                                             resume=self.resume,
+                                            resume_imaging=resume_imaging,
                                             export_fits=export_fits,
                                             get_spectra=get_spectra,
                                             plot_results=plot_results,
@@ -1166,27 +1175,13 @@ class FieldManager:
                                                nproc=nproc,
                                                auto_threshold=auto_threshold,
                                                resume=self.resume,
+                                               resume_imaging=resume_imaging,
                                                export_fits=export_fits,
                                                plot_results=plot_results,
                                                compare_to=compare_to,
                                                robust_values=robust_values,
                                                **tclean_args)
                 imagenames.append(imagename)
-
-                #if compare_to is not None:
-                #    self.log.info('Plotting comparison between %s and %s',
-                #                  section, compare_to)
-                #    if (robust:=tclean_args.get('robust')) is not None:
-                #        comp_image = handler.get_imagename(uvtype,
-                #                                           section=compare_to,
-                #                                           robust=robust)
-                #    else:
-                #        raise ValueError('Robust parameter needed for name')
-                #    plotname = imagename.with_suffix((f'.{section}'
-                #                                      f'.compare_{compare_to}'
-                #                                      '.png'))
-                #    plotname = handler.uvdata.parent / 'plots' / plotname.name
-                #    plot_comparison(comp_image, imagename, plotname)
 
         return imagenames
 
