@@ -52,8 +52,18 @@ def find_near_exact_denominator(num: int, den: int,
 
 def get_spw_start(uvdata: 'pathlib.Path',
                   spws: str,
-                  width: Optional[str] = None):
-    """Find the common range for the same spw in different EBs."""
+                  width: Optional[str] = None,
+                  shift_start: Optional[int] = None,
+                  shift_end: Optional[int] = None):
+    """Find the common range for the same spw in different EBs.
+
+    Args:
+      uvdata: The visibility data.
+      spws: Spectral windows for the freq./vel. range.
+      width: Optional; Channel width with unit in CASA format.
+      shift_start: Optional; Add/reduce channels at start.
+      shift_end: Optional; Add/reduce channels at end.
+    """
     # Check width unit
     if width is not None:
         width_qa = u.Quantity(width)
@@ -83,6 +93,8 @@ def get_spw_start(uvdata: 'pathlib.Path',
             freq_to_vel = u.doppler_radio(ref_freq)
             width_hz = width_qa.to(u.kHz, equivalencies=freq_to_vel)
             width_hz = np.abs(width_hz - ref_freq)
+        elif width is not None and width_qa.unit.is_equivalent(u.Hz):
+            width_hz = np.abs(width_qa)
         else:
             width_hz = np.abs(freqs[0] - freqs[1])
             width_hz = width_hz.to(u.kHz)
@@ -94,6 +106,12 @@ def get_spw_start(uvdata: 'pathlib.Path',
     start = np.max(starts)
     end = np.min(ends)
     width_qa = np.max(widths)
+
+    # Apply shift
+    if shift_start is not None:
+        start = start + shift_start * width_qa
+    if shift_end is not None:
+        end = end + shift_end * width_qa
 
     # Set tclean values
     #if width is None:

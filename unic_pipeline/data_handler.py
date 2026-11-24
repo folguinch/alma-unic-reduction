@@ -438,9 +438,13 @@ class ArrayHandler:
                 'nchan' not in kwargs):
                 if (width:=kwargs.get('width')) is not None:
                     self.log.info('Input width: %s', width)
+                shift_start = config.getint('shift_start', fallback=None)
+                shift_end = config.getint('shift_end', fallback=None)
                 start, nchan, width = get_spw_start(self.get_uvname(uvtype),
                                                     kwargs['spw'],
-                                                    width=width)
+                                                    width=width,
+                                                    shift_start=shift_start,
+                                                    shift_end=shift_end)
                 kwargs['start'] = start
                 kwargs['nchan'] = nchan
                 kwargs['width'] = width
@@ -521,12 +525,14 @@ class ArrayHandler:
                 if (specmode == 'cube' and
                     config.getboolean('use_multi_clean')):
                     self.log.info('Using cube_multi_clean')
+                    thresh_niter = config.get('thresh_niter', fallback=2)
                     imagename, kwargs['threshold'] = cube_multi_clean(
                         uvdata,
                         imagename,
                         nproc,
                         self.array,
                         kwargs,
+                        thresh_niter=thresh_niter,
                         nsigma=nsigma,
                         plot_results=plot_results,
                         resume=resume,
