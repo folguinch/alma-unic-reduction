@@ -90,7 +90,7 @@ def combine_arrays(args: argparse.Namespace):
                             dirty_images=False, nproc=args.nproc[0])
 
 def continuum_control(args: argparse.Namespace):
-    """Trigger control imaging for the continnum."""
+    """Trigger control imaging for the continuum."""
     for data in args.data.values():
         data.array_imaging('continuum_control',
                            'continuum',
